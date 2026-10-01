@@ -1,40 +1,68 @@
 QUESTIONS = [
     {
         "key": "identity",
+        "required": True,
         "question": "Let's build your listing. What is this piece called, and what is it?",
         "quick_replies": ["It's a handwoven shawl"],
     },
     {
         "key": "material",
-        "question": "What is it made from? Tell me the real materials and dyes.",
+        "required": True,
+        "question": "What is it made from? Tell me the materials and dyes.",
         "quick_replies": ["Handspun cotton with natural indigo dye"],
     },
     {
+        "key": "making_time",
+        "required": True,
+        "question": "Roughly how long does one piece take to make?",
+        "quick_replies": ["About two weeks per piece"],
+    },
+    {
+        "key": "delivery",
+        "required": True,
+        "question": "After an order, roughly how long until it is delivered?",
+        "quick_replies": ["Made to order; ships in about 3-4 weeks"],
+    },
+    {
         "key": "care",
+        "required": True,
         "question": "How should a buyer care for it? Say exactly what is safe (and unsafe).",
         "quick_replies": ["Hand wash cold, dry in shade, never machine wash"],
     },
     {
         "key": "process",
-        "question": "How is it made, and roughly how long does one piece take?",
-        "quick_replies": ["Handwoven on a pit loom, about two weeks per piece"],
+        "required": False,
+        "question": "How is it made, step by step?",
+        "quick_replies": ["Handwoven on a pit loom"],
     },
     {
         "key": "variation",
+        "required": False,
         "question": "What naturally varies from piece to piece?",
         "quick_replies": ["Dye shade and weave texture vary slightly"],
     },
     {
         "key": "photo",
+        "required": True,
         "question": "Is the photo the exact piece the buyer receives? Is it one of a kind?",
         "quick_replies": ["Yes, the photo is the exact piece and it's one of a kind"],
     },
     {
         "key": "cultural",
+        "required": True,
         "question": "Does the pattern have a cultural meaning? Share only what is truly known.",
         "quick_replies": ["It is a family motif; I won't describe meaning I can't confirm"],
     },
+    {
+        "key": "price",
+        "required": True,
+        "question": "What is the price of this piece?",
+        "quick_replies": ["1200"],
+    },
 ]
+
+REQUIRED_KEYS = [q["key"] for q in QUESTIONS if q.get("required")]
+OPTIONAL_KEYS = [q["key"] for q in QUESTIONS if not q.get("required")]
 
 START_WORDS = {"new", "listing", "start", "begin", "hi", "hello", "hey", "product", "create"}
 CONFIRM_WORDS = {"yes", "y", "yeah", "yep", "confirm", "confirmed", "correct", "right", "ok", "okay", "sure"}

@@ -221,7 +221,8 @@ def build():
         [
             ("Transport / webhook", "Receives Twilio form posts, downloads media (photo/voice), converts to an internal message, returns TwiML replies."),
             ("Agent orchestrator", "Owns the conversation state machine: idle -> interview -> confirm -> review -> publish."),
-            ("Interview module", "Guided questions (identity, material, care, process, variation, photo, cultural) with quick replies."),
+            ("Interview module", "Guided questions with quick replies. Compulsory (always asked): identity, material, making time, delivery time, care, photo/exactness, cultural meaning, price. Optional: process, variation."),
+            ("Order intake", "Buyer places an order from the product page (price, quantity, contact); the order is stored and the seller is notified on WhatsApp."),
             ("Claim Ledger", "Stores only confirmed facts: {id, type, text, source_turn, confirmed}. The single source of truth."),
             ("Draft module", "Uses an LLM to write a complete, persuasive listing from the confirmed facts."),
             ("Guard (core)", "Splits the draft into atomic claims, classifies each against the ledger, and repairs or blocks unsafe claims."),
@@ -271,6 +272,7 @@ def build():
             "The seller replies with text or a voice note. Voice notes are transcribed with Whisper.",
             "The reply is turned into a structured fact, added to the product's knowledge base, and the question is marked answered.",
             "The buyer page polls /api/buyer/thread and shows the answer; future similar questions are answered instantly from the learned fact.",
+            "The buyer can order from the product page; the order carries the price and contact, and the seller is notified on WhatsApp and in the seller view.",
         ],
     )
     h2(doc, "4.6 Why this loop matters")
@@ -458,7 +460,7 @@ def build():
         doc,
         [
             "Maker sends a message (or voice note) to the WhatsApp number.",
-            "Bot asks up to seven short questions with quick-reply options.",
+            "Bot asks the compulsory questions (identity, material, making time, delivery time, care, photo/exactness, cultural meaning, price) plus optional process and variation, with quick-reply options.",
             "Maker can send a photo; it is stored and shown on the buyer page.",
             "Each answer is echoed back for confirmation before it is recorded.",
             "Bot presents the guarded listing and lists any blocked claims.",
@@ -473,6 +475,8 @@ def build():
             "Sees the product photo and the listing sections (story, materials, care, production, variations, cultural note, exact piece).",
             "Sees a trust banner and a provenance panel of the confirmed facts used.",
             "Sees a note when unconfirmed claims were deliberately blocked.",
+            "Asks questions; the knowledge base answers instantly or the seller is asked.",
+            "Places an order (quantity and contact); the seller is notified on WhatsApp.",
         ],
     )
     h2(doc, "8.3 Owner and tester split")

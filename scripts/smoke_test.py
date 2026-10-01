@@ -27,11 +27,14 @@ def chat(message, sid=None):
 ANSWERS = [
     "Handwoven wool shawl",
     "Pure wool with natural dyes",
+    "One week per piece",
+    "Ships in about two weeks",
     "Hand wash only, dry in shade",
-    "Woven on a handloom, one week per piece",
+    "Woven on a handloom",
     "Colour and texture vary slightly",
     "Yes, this is the exact piece, one of a kind",
     "A family pattern whose meaning I cannot confirm",
+    "1200",
 ]
 
 
@@ -100,8 +103,8 @@ def main():
     non = chat("hi")
     sid2 = non["session_id"]
     answers2 = list(ANSWERS)
-    answers2[2] = "I don't know"
-    answers2[6] = "no idea"
+    answers2[4] = "I don't know"
+    answers2[8] = "no idea"
     for answer in answers2:
         chat(answer, sid2)
         chat("Yes", sid2)

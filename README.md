@@ -18,8 +18,10 @@ listing in minutes, where every claim is traceable to the maker and nothing is i
 
 ## How it works
 
-1. **Interview** - the bot asks a few quick-reply questions (identity, material, care,
-   process, natural variation, photo, cultural meaning).
+1. **Interview** - the bot asks quick-reply questions. Some are **compulsory** and always
+   asked (identity, material, making time, delivery time, care, photo/exactness, cultural
+   meaning, price); a couple are optional (process, natural variation). Every answer is
+   stored as a confirmed fact, so the same facts seed the buyer knowledge base.
 2. **Confirm** - each answer is extracted into facts and echoed back for a one-tap confirm.
    Only confirmed facts enter the **Claim Ledger**.
 3. **Draft** - an LLM writes a complete, appealing listing (it is allowed to be persuasive,
@@ -40,6 +42,8 @@ Then the **buyer loop**:
    If not, the question is escalated to the maker on WhatsApp.
 9. **Learn** - the maker replies with text or a voice note; it is processed into a fact,
    stored in the knowledge base, and shown back to the buyer.
+10. **Order** - the buyer places an order from the product page. The order is stored with the
+    price and buyer contact, and the maker is notified on WhatsApp and in the seller view.
 
 ```
 Maker (WhatsApp) -> FastAPI /webhook or simulator -> agent.py
@@ -101,12 +105,14 @@ Prints a full interview, the guarded listing, and the blocked claims.
 ### Smoke test
 
 ```powershell
-python -m scripts.smoke_test
+python -m scripts.smoke_test        # modular version
+python -m scripts.smoke_single      # single-file app.py
 ```
 
-Exercises the whole flow (interview, guard, publish, buyer page, restart, retry,
-non-answer handling, voice, reset, invalid input, Twilio webhook) and exits non-zero on
-any failure.
+`smoke_test` exercises the whole flow (interview, guard, publish, buyer page, restart,
+retry, non-answer handling, voice, reset, invalid input, Twilio webhook). `smoke_single`
+additionally covers the compulsory questions, the knowledge-base answers (care, delivery,
+making time), seller escalation/answer, and orders. Both exit non-zero on any failure.
 
 ## Go live on WhatsApp (Twilio)
 

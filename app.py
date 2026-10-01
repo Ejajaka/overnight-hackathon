@@ -125,6 +125,14 @@ Rules:
 - For unsupported/cultural_unverified claims, put a safe replacement in replacement, or "" to drop it.
 Split into the smallest meaningful claims. Use the exact field names from the draft."""
 
+TRANSLATE_TO_EN_SYSTEM = """Detect the language of the text and translate it to English.
+Return JSON only: {"language": "<English name of the detected language>", "english": "<the text in English>"}.
+If the text is already English, return it unchanged with language "English".
+Translate meaning faithfully and do not add or remove information."""
+
+TRANSLATE_FROM_EN_SYSTEM = """Translate the given English text into the requested target language.
+Return JSON only: {"text": "<translation>"}. Keep any *asterisks*, numbers, and URLs intact."""
+
 KB_SYSTEM = """You are a shop assistant answering a buyer's question about a handmade product.
 Use ONLY the confirmed facts provided (and prior answered questions). Never guess or invent.
 Return JSON only: {"answerable": true/false, "answer": "..."}.
@@ -151,7 +159,7 @@ LISTING_FIELDS = [
 _CARE_WORDS = {"wash", "washing", "washable", "dry", "clean", "cleaning", "iron", "bleach", "detergent", "dryclean"}
 _CULTURAL_WORDS = {"symbol", "symbolize", "symbolizes", "symbolise", "symbolises", "meaning", "means", "heritage", "represents", "signifies", "auspicious", "prosperity", "fortune", "luck", "sacred", "ritual", "blessing"}
 _MATERIAL_WORDS = {"cotton", "silk", "wool", "linen", "jute", "dye", "indigo", "thread", "fibre", "fiber", "handspun", "clay", "brass", "wood"}
-_PROCESS_WORDS = {"made", "handmade", "woven", "weave", "loom", "handloom", "takes", "days", "weeks", "hand", "crafted", "produced", "dyed", "spin"}
+_PROCESS_WORDS = {"made", "handmade", "woven", "weave", "loom", "handloom", "takes", "days", "weeks", "week", "hand", "crafted", "produced", "dyed", "spin", "deliver", "delivered", "delivery", "ships", "shipping", "dispatch", "month", "months"}
 _VARIATION_WORDS = {"varies", "variation", "vary", "unique", "slight", "shade", "texture", "no two", "each piece"}
 _PHOTO_WORDS = {"photo", "photograph", "picture", "exact", "one of a kind", "one-of-a-kind", "pictured"}
 NON_ANSWER_PHRASES = ("don't know", "do not know", "dont know", "not sure", "no idea", "skip", "n/a", "not applicable", "none", "nothing to add")
@@ -338,9 +346,15 @@ def _mock_draft(facts):
     care = first("care", "Machine wash on a gentle cycle and tumble dry low.")
     if first("care"):
         care = care.rstrip(".") + ". It is also machine washable."
-    production = first("process", "Each piece is made to order.")
-    if first("process"):
-        production = production.rstrip(".") + ". Ships within two days."
+    prod_bits = []
+    for _t in ("process", "making_time", "delivery"):
+        _v = first(_t)
+        if _v and _v not in prod_bits:
+            prod_bits.append(_v.rstrip("."))
+    if prod_bits:
+        production = ". ".join(prod_bits) + ". Ships within two days."
+    else:
+        production = "Each piece is made to order."
     variations = first("variation", "")
     cultural_base = first("cultural", "")
     cultural_note = (cultural_base.rstrip(".") + ". This traditional motif symbolises prosperity and good fortune.").strip()
@@ -425,6 +439,8 @@ _KB_TIME = {"long", "time", "delivery", "deliver", "ship", "shipping", "weeks", 
 _KB_VARY = {"vary", "varies", "variation", "differ", "difference", "unique", "identical", "same", "consistent"}
 _KB_CULTURE = {"meaning", "mean", "symbol", "symbolise", "symbolize", "culture", "cultural", "tradition", "heritage", "significance"}
 _KB_MATERIAL = {"material", "fabric", "made", "cotton", "silk", "wool", "dye", "colour", "color", "thread"}
+_KB_DELIVERY = {"deliver", "delivered", "delivery", "arrive", "arrives", "arrival", "shipping", "ship", "ships", "dispatch", "courier", "receive"}
+_KB_MAKING = {"make", "makes", "making", "produce", "produced", "production", "long", "weeks", "week", "days", "day", "takes", "take", "craft"}
 
 
 _KB_REQUEST_PHRASES = (
@@ -467,6 +483,8 @@ def mock_kb_answer(question, facts, qa_history):
 
     checks = [
         (_KB_CARE, "care"),
+        (_KB_DELIVERY, "delivery"),
+        (_KB_MAKING, "making_time"),
         (_KB_PHOTO, "photo"),
         (_KB_TIME, "process"),
         (_KB_VARY, "variation"),
@@ -496,6 +514,42 @@ def kb_answer(question, facts, qa_history):
         return None
     except Exception:
         return mock_kb_answer(question, facts, qa_history)
+
+
+def translate_to_english(text):
+    client = _client()
+    if client is None or not text.strip():
+        return text, "English"
+    try:
+        payload = _chat_json(TRANSLATE_TO_EN_SYSTEM, text)
+        english = str(payload.get("english") or text).strip()
+        language = str(payload.get("language") or "English").strip()
+        return english, language
+    except Exception:
+        return text, "English"
+
+
+def translate_from_english(text, language):
+    if not text or not language or language.lower() == "english":
+        return text
+    client = _client()
+    if client is None:
+        return text
+    try:
+        payload = _chat_json(
+            TRANSLATE_FROM_EN_SYSTEM,
+            f"Target language: {language}\n\nText:\n{text}",
+        )
+        return str(payload.get("text") or text).strip()
+    except Exception:
+        return text
+
+
+def _parse_price(text):
+    import re as _re
+
+    digits = _re.sub(r"[^0-9]", "", text or "")
+    return int(digits) if digits else None
 
 
 # --------------------------------------------------------------------------
@@ -539,14 +593,20 @@ class Ledger:
 # Interview
 # --------------------------------------------------------------------------
 QUESTIONS = [
-    {"key": "identity", "question": "Let's build your listing. What is this piece called, and what is it?", "quick_replies": ["It's a handwoven shawl"]},
-    {"key": "material", "question": "What is it made from? Tell me the real materials and dyes.", "quick_replies": ["Handspun cotton with natural indigo dye"]},
-    {"key": "care", "question": "How should a buyer care for it? Say exactly what is safe (and unsafe).", "quick_replies": ["Hand wash cold, dry in shade, never machine wash"]},
-    {"key": "process", "question": "How is it made, and roughly how long does one piece take?", "quick_replies": ["Handwoven on a pit loom, about two weeks per piece"]},
-    {"key": "variation", "question": "What naturally varies from piece to piece?", "quick_replies": ["Dye shade and weave texture vary slightly"]},
-    {"key": "photo", "question": "Is the photo the exact piece the buyer receives? Is it one of a kind?", "quick_replies": ["Yes, the photo is the exact piece and it's one of a kind"]},
-    {"key": "cultural", "question": "Does the pattern have a cultural meaning? Share only what is truly known.", "quick_replies": ["It is a family motif; I won't describe meaning I can't confirm"]},
+    {"key": "identity", "required": True, "question": "Let's build your listing. What is this piece called, and what is it?", "quick_replies": ["It's a handwoven shawl"]},
+    {"key": "material", "required": True, "question": "What is it made from? Tell me the materials and dyes.", "quick_replies": ["Handspun cotton with natural indigo dye"]},
+    {"key": "making_time", "required": True, "question": "Roughly how long does one piece take to make?", "quick_replies": ["About two weeks per piece"]},
+    {"key": "delivery", "required": True, "question": "After an order, roughly how long until it is delivered?", "quick_replies": ["Made to order; ships in about 3-4 weeks"]},
+    {"key": "care", "required": True, "question": "How should a buyer care for it? Say exactly what is safe (and unsafe).", "quick_replies": ["Hand wash cold, dry in shade, never machine wash"]},
+    {"key": "process", "required": False, "question": "How is it made, step by step?", "quick_replies": ["Handwoven on a pit loom"]},
+    {"key": "variation", "required": False, "question": "What naturally varies from piece to piece?", "quick_replies": ["Dye shade and weave texture vary slightly"]},
+    {"key": "photo", "required": True, "question": "Is the photo the exact piece the buyer receives? Is it one of a kind?", "quick_replies": ["Yes, the photo is the exact piece and it's one of a kind"]},
+    {"key": "cultural", "required": True, "question": "Does the pattern have a cultural meaning? Share only what is truly known.", "quick_replies": ["It is a family motif; I won't describe meaning I can't confirm"]},
+    {"key": "price", "required": True, "question": "What is the price of this piece?", "quick_replies": ["1200"]},
 ]
+
+REQUIRED_KEYS = [q["key"] for q in QUESTIONS if q.get("required")]
+OPTIONAL_KEYS = [q["key"] for q in QUESTIONS if not q.get("required")]
 
 CONFIRM_WORDS = {"yes", "y", "yeah", "yep", "confirm", "confirmed", "correct", "right", "ok", "okay", "sure"}
 DENY_WORDS = {"no", "n", "nope", "wrong", "incorrect", "edit", "change"}
@@ -663,6 +723,7 @@ class Session:
         self.seller_phone = None
         self.price = None
         self.qa = []
+        self.language_name = "English"
         self.created = time.time()
 
 
@@ -689,6 +750,7 @@ store = SessionStore()
 
 BUYER_QUESTIONS = {}
 PENDING_BY_SELLER = {}
+ORDERS = {}
 
 
 def publish_product(session):
@@ -736,6 +798,7 @@ def answer_seller_question(seller_key, text):
     answer = (text or "").strip()
     if not answer:
         return None
+    answer, _language = translate_to_english(answer)
     facts = extract_facts("buyer_question", entry["question"], answer)
     if not facts:
         facts = [{"type": "general", "text": answer}]
@@ -756,11 +819,14 @@ INTRO = "Hi! I turn your craft knowledge into a buyer-ready listing where nothin
 SAMPLE_FACTS = [
     {"type": "identity", "text": "Handwoven indigo shawl"},
     {"type": "material", "text": "Handspun cotton with natural indigo dye"},
+    {"type": "making_time", "text": "About two weeks per piece"},
+    {"type": "delivery", "text": "Made to order; ships in about 3-4 weeks"},
     {"type": "care", "text": "Hand wash cold, dry in shade, never machine wash"},
-    {"type": "process", "text": "Handwoven on a pit loom, about two weeks per piece"},
+    {"type": "process", "text": "Handwoven on a pit loom"},
     {"type": "variation", "text": "Dye shade and weave texture vary slightly"},
     {"type": "photo", "text": "The photo shows the exact piece the buyer receives; it is one of a kind"},
     {"type": "cultural", "text": "A family motif; the meaning is not documented here"},
+    {"type": "price", "text": "1200"},
 ]
 
 
@@ -852,10 +918,18 @@ def start(session):
     session.q_index = 0
     session.audit = None
     session.published = False
-    return _reply([INTRO, _current_question(session)["question"]], _current_question(session)["quick_replies"], stage=session.stage)
+    return _reply(
+        [
+            INTRO,
+            "I'll always ask a few required questions " + ", ".join(REQUIRED_KEYS) + " - then a couple of optional ones.",
+            _current_question(session)["question"],
+        ],
+        _current_question(session)["quick_replies"],
+        stage=session.stage,
+    )
 
 
-def handle_message(session, text):
+def _handle_english(session, text):
     text = (text or "").strip()
     if not text:
         return _reply("Please send a message or a voice note.", stage=session.stage)
@@ -871,6 +945,9 @@ def handle_message(session, text):
         if is_confirm(text):
             if session.pending_facts:
                 session.ledger.add_many(session.pending_facts, source_turn=session.q_index)
+                for fact in session.pending_facts:
+                    if fact.get("type") == "price":
+                        session.price = _parse_price(fact.get("text", ""))
             session.pending_facts = []
             return _advance(session)
         if is_retry(text):
@@ -906,6 +983,21 @@ def handle_message(session, text):
         return _listing_reply(session, prefix="Updated with your correction.")
 
     return start(session)
+
+
+def handle_message(session, text):
+    original = (text or "").strip()
+    if original:
+        english, language = translate_to_english(original)
+        if language and language.lower() != "english":
+            session.language_name = language
+        if english:
+            text = english
+    reply = _handle_english(session, text)
+    language = getattr(session, "language_name", "English")
+    if language and language.lower() != "english":
+        reply["messages"] = [translate_from_english(message, language) for message in reply["messages"]]
+    return reply
 
 
 # --------------------------------------------------------------------------
@@ -977,7 +1069,7 @@ body{margin:0;font-family:"Segoe UI",system-ui,-apple-system,sans-serif;backgrou
 
 FRONTEND_JS = r"""
 const chat=document.getElementById("chat"),quick=document.getElementById("quick"),input=document.getElementById("input"),sendBtn=document.getElementById("send"),micBtn=document.getElementById("mic"),photoBtn=document.getElementById("photoBtn"),photoFile=document.getElementById("photoFile"),resetBtn=document.getElementById("reset"),sampleBtn=document.getElementById("sample"),statusEl=document.getElementById("status"),toast=document.getElementById("toast");
-let sessionId=localStorage.getItem("stl_session")||null,busy=false,pendingQ=[],seenQ={};
+let sessionId=localStorage.getItem("stl_session")||null,busy=false,pendingQ=[],seenQ={},seenOrders={};
 const LABELS=[["story","Story"],["materials","Materials"],["care","Care"],["production","Production time"],["variations","Natural variations"],["cultural_note","Cultural note"],["photo_note","The exact piece"],["buyer_faq","Buyer FAQ"]];
 function esc(v){return String(v||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
 function now(){return new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}
@@ -989,6 +1081,7 @@ function showToast(m){toast.textContent=m;toast.classList.add("show");setTimeout
 function handleResponse(resp){if(resp.session_id){sessionId=resp.session_id;localStorage.setItem("stl_session",sessionId)}if(resp.buyer_url&&resp.listing&&resp.listing.published)resp.listing.buyer_path=resp.buyer_url;(resp.messages||[]).forEach(t=>addBubble(t,false));if(resp.listing)addListingCard(resp.listing);setQuick(resp.quick_replies);if(resp.mock_llm)statusEl.textContent="maker assistant · offline mock"}
 async function sendSellerAnswer(text){busy=true;addBubble(text,true);const typing=addTyping();try{const res=await fetch("/api/seller/answer",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({session_id:sessionId,answer:text})});const d=await res.json();typing.remove();if(d.ok){pendingQ.shift();addBubble("Sent to the buyer and saved to the knowledge base.",false)}else addBubble("No pending question to answer.",false)}catch(e){typing.remove();addBubble("Could not send that answer.",false)}finally{busy=false}}
 async function pollSeller(){try{const res=await fetch("/api/seller/questions?session_id="+(sessionId||""));const d=await res.json();const fresh=(d.questions||[]).filter(q=>!seenQ[q.question_id]);fresh.forEach(q=>{seenQ[q.question_id]=1;pendingQ.push(q);addBubble("Buyer question: "+q.question+"\n\n(Reply here - your answer goes to the buyer and into the knowledge base.)",false)});if(fresh.length)setQuick(["Publish","Fix something"])}catch(e){}}
+async function pollOrders(){try{const res=await fetch("/api/orders?session_id="+(sessionId||""));const d=await res.json();(d.orders||[]).forEach(o=>{if(seenOrders[o.id])return;seenOrders[o.id]=1;addBubble("NEW ORDER for '"+o.title+"'\nQty: "+o.quantity+(o.price?("\nPrice: "+o.price):"")+"\nBuyer: "+o.name+(o.contact?("\nContact: "+o.contact):"")+(o.note?("\nNote: "+o.note):"")+"\n\nReach the buyer on WhatsApp to confirm.",false)})}catch(e){}}
 async function send(text){if(busy||!text)return;const low=text.toLowerCase();if(pendingQ.length&&low!=="publish"&&!low.includes("new listing")){return sendSellerAnswer(text)}busy=true;setQuick([]);addBubble(text,true);const typing=addTyping();try{const res=await fetch("/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({session_id:sessionId,message:text})});const data=await res.json();typing.remove();handleResponse(data)}catch(e){typing.remove();addBubble("Connection error. Is the server running?",false)}finally{busy=false}}
 sendBtn.onclick=()=>{const v=input.value.trim();input.value="";send(v)};
 input.addEventListener("keydown",e=>{if(e.key==="Enter"){const v=input.value.trim();input.value="";send(v)}});
@@ -1000,7 +1093,7 @@ async function sendVoice(blob){busy=true;addBubble("[voice note]",true);const ty
 photoBtn.onclick=()=>photoFile.click();
 photoFile.onchange=()=>{const f=photoFile.files[0];if(f)sendPhoto(f);photoFile.value=""};
 async function sendPhoto(file){busy=true;const typing=addTyping();const form=new FormData();form.append("session_id",sessionId||"");form.append("image",file);try{const res=await fetch("/api/photo",{method:"POST",body:form});const data=await res.json();typing.remove();handleResponse(data)}catch(e){typing.remove();addBubble("Could not send photo.",false)}finally{busy=false}}
-window.addEventListener("DOMContentLoaded",()=>{send("hi");setInterval(pollSeller,5000)});
+window.addEventListener("DOMContentLoaded",()=>{send("hi");setInterval(pollSeller,5000);setInterval(pollOrders,5000)});
 """
 
 INDEX_HTML = (
@@ -1069,15 +1162,30 @@ SHOP_EXTRA_CSS = """
 .chat-input{display:flex;gap:8px;position:sticky;bottom:0;background:#f7f4ef;padding:12px 0}
 .chat-input input{flex:1;border:1px solid #ddd;border-radius:22px;padding:12px 16px;font-size:14px;outline:none}
 .chat-input button{background:#128c7e;color:#fff;border:none;border-radius:22px;padding:0 22px;font-size:14px;cursor:pointer}
+.product-card .price{color:#075e54;font-weight:700;margin-top:6px;font-size:15px}
+.addbtn{width:100%;margin-top:10px;background:#e7f6f1;color:#075e54;border:1px solid #bfe3ca;border-radius:10px;padding:9px;font-size:13px;cursor:pointer;font-weight:600}
+.addbtn:hover{background:#d6efe7}
+.buybtn{background:#128c7e;color:#fff;border:none;border-radius:24px;padding:13px 28px;font-size:15px;cursor:pointer;font-weight:600}
+.cartbar{display:none;position:sticky;bottom:0;background:#075e54;color:#fff;padding:12px 16px;align-items:center;justify-content:space-between;border-radius:12px 12px 0 0;margin-top:20px}
+.cartbar button{background:#25d366;color:#08331f;border:none;border-radius:22px;padding:10px 20px;font-size:14px;font-weight:700;cursor:pointer}
 """
 
 SHOP_JS = r"""
 function esc(v){return String(v||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
 const grid=document.getElementById("grid");
+if(!localStorage.getItem("buyer_id"))localStorage.setItem("buyer_id","b"+Math.random().toString(36).slice(2,10));
+function getCart(){try{return JSON.parse(localStorage.getItem("cart")||"[]")}catch(e){return[]}}
+function setCart(c){localStorage.setItem("cart",JSON.stringify(c));renderCart()}
+function renderCart(){const c=getCart();const bar=document.getElementById("cartbar");if(!bar)return;bar.style.display=c.length?"flex":"none";document.getElementById("cartcount").textContent=c.reduce((n,i)=>n+i.qty,0)}
+function addToCart(ev,p){ev.preventDefault();ev.stopPropagation();const c=getCart();const ex=c.find(i=>i.id===p.id);if(ex)ex.qty++;else c.push({id:p.id,title:p.title,price:p.price,qty:1});setCart(c)}
 fetch("/api/catalog").then(r=>r.json()).then(d=>{
   if(!d.products.length){grid.innerHTML='<div class="empty">No products yet. Publish a listing from the maker chat, then reload.</div>';return}
-  grid.innerHTML=d.products.map(p=>'<a class="product-card" href="'+p.path+'">'+(p.photo_url?'<img src="'+p.photo_url+'" alt="">':'<span class="noimg"></span>')+'<div class="pc-body"><h3>'+esc(p.title)+'</h3><p>'+esc(p.materials||"Handmade item")+'</p><div class="pc-link">View &amp; ask a question &rarr;</div></div></a>').join("");
+  grid.innerHTML=d.products.map(p=>'<a class="product-card" href="'+p.path+'">'+(p.photo_url?'<img src="'+p.photo_url+'" alt="">':'<span class="noimg"></span>')+'<div class="pc-body"><h3>'+esc(p.title)+'</h3><p>'+esc(p.materials||"Handmade item")+'</p>'+(p.price?'<div class="price">₹'+p.price+'</div>':'')+'<div class="pc-link">View &amp; ask a question &rarr;</div><button class="addbtn" data-add="'+p.id+'">Add to cart</button></div></a>').join("");
+  grid.querySelectorAll("[data-add]").forEach(btn=>btn.onclick=ev=>{const p=d.products.find(x=>x.id===btn.getAttribute("data-add"));addToCart(ev,p)});
 }).catch(()=>{grid.innerHTML='<div class="empty">Could not load products.</div>'});
+const place=document.getElementById("placeorder");
+if(place)place.onclick=()=>{const c=getCart();if(!c.length)return;const name=prompt("Your name?")||"A buyer";const contact=prompt("Your phone or email?")||"";let done=0;c.forEach(item=>{fetch("/api/buyer/order",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({product_id:item.id,buyer_id:localStorage.getItem("buyer_id"),name:name,contact:contact,quantity:item.qty})}).then(r=>r.json()).then(()=>{done++;if(done===c.length){setCart([]);alert("Order placed! The maker has been notified on WhatsApp.")}})});};
+renderCart();
 """
 
 SHOP_HTML = (
@@ -1086,7 +1194,9 @@ SHOP_HTML = (
     "<title>Artisan Market</title><style>" + SHARED_CSS + SHOP_EXTRA_CSS + "</style></head>"
     "<body class='shop-page'><header class='shop-header'><a href='/shop' class='brand'>Artisan Market</a>"
     "<a href='/' class='seller-link'>I'm a maker</a></header>"
-    "<div class='shop-wrap'><div id='grid' class='grid'></div></div>"
+    "<div class='shop-wrap'><div id='grid' class='grid'></div>"
+    "<div class='cartbar' id='cartbar'><span><strong id='cartcount'>0</strong> item(s) in cart</span>"
+    "<button id='placeorder'>Place order on WhatsApp</button></div></div>"
     "<script>" + SHOP_JS + "</script></body></html>"
 )
 
@@ -1100,9 +1210,13 @@ function renderListing(d){
   const s=d.safe||{};let html="<div class='trust-banner'>Every statement below is traced to facts the maker confirmed. Nothing is invented.</div>";
   if(d.photo_url)html+="<img src='"+d.photo_url+"' alt='' style='width:100%;border-radius:12px;margin-bottom:14px'/>";
   html+="<h1>"+esc(s.title||"Handmade piece")+"</h1><div class='tagline'>Handmade &middot; one of a kind</div>";
+  if(d.price)html+="<div class='price' style='font-size:20px;margin:6px 0 4px'>\u20b9"+esc(d.price)+"</div>";
   for(const f of QLABELS){if(s[f[0]])html+="<div class='buyer-section'><h2>"+f[1]+"</h2><p>"+esc(s[f[0]])+"</p></div>"}
+  html+="<div style='margin:18px 0'><button id='buybtn' class='buybtn'>Buy now</button></div>";
   document.getElementById("detail").innerHTML=html;
+  const b=document.getElementById("buybtn");if(b)b.onclick=buyNow;
 }
+function buyNow(){const name=prompt("Your name?")||"A buyer";const contact=prompt("Your phone or email?")||"";const note=prompt("Any message for the maker? (optional)")||"";fetch("/api/buyer/order",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({product_id:PID,buyer_id:buyerId,name:name,contact:contact,note:note})}).then(r=>r.json()).then(res=>{alert("Order placed! The maker has been notified on WhatsApp. Reference: "+res.order_id)})}
 function loadQa(){fetch("/api/buyer/thread/"+PID).then(r=>r.json()).then(d=>{
   const box=document.getElementById("qa");
   box.innerHTML=(d.qa||[]).map(qaHtml).join("")||"<p style='color:#667781'>No questions yet. Ask the maker anything.</p>";
@@ -1202,7 +1316,7 @@ async def sample(request: Request):
     session.ledger = Ledger()
     session.ledger.add_many(SAMPLE_FACTS)
     session.q_index = len(QUESTIONS)
-    reply = _listing_reply(session, prefix="Sample maker: seven confirmed facts loaded.")
+    reply = _listing_reply(session, prefix=f"Sample maker: {len(SAMPLE_FACTS)} confirmed facts loaded.")
     return _respond(request, session, reply)
 
 
@@ -1249,6 +1363,7 @@ def listing(sid: str):
         "facts": session.ledger.all(),
         "published": session.published,
         "photo_url": _media_url(session),
+        "price": session.price,
     }
 
 
@@ -1330,6 +1445,57 @@ async def seller_answer(request: Request):
     if not entry:
         return JSONResponse({"error": "no pending question"}, status_code=404)
     return {"ok": True, "question": entry["question"], "answer": entry["answer"], "product_id": session.id}
+
+
+@app.post("/api/buyer/order")
+async def buyer_order(request: Request):
+    payload = await request.json()
+    session = store.get(payload.get("product_id"))
+    if not session.audit:
+        return JSONResponse({"error": "unknown product"}, status_code=404)
+    title = (session.audit.get("safe", {}) or {}).get("title") or "your product"
+    try:
+        quantity = max(1, int(payload.get("quantity") or 1))
+    except Exception:
+        quantity = 1
+    buyer_name = (payload.get("name") or "").strip() or "A buyer"
+    buyer_contact = (payload.get("contact") or "").strip()
+    note = (payload.get("note") or "").strip()
+    order = {
+        "id": uuid.uuid4().hex[:10],
+        "product_id": session.id,
+        "title": title,
+        "buyer_id": payload.get("buyer_id") or "guest",
+        "name": buyer_name,
+        "contact": buyer_contact,
+        "note": note,
+        "quantity": quantity,
+        "price": session.price,
+        "status": "placed",
+        "created": time.time(),
+    }
+    ORDERS[order["id"]] = order
+    seller = session.seller_phone or session.id
+    notified = False
+    if str(seller).startswith("whatsapp:"):
+        lines = [f"New order for '{title}'", f"Quantity: {quantity}"]
+        if session.price:
+            lines.append(f"Price: {session.price}")
+        lines.append(f"Buyer: {buyer_name}")
+        if buyer_contact:
+            lines.append(f"Contact: {buyer_contact}")
+        if note:
+            lines.append(f"Note: {note}")
+        notified = send_whatsapp(seller, "\n".join(lines))
+    return {"order_id": order["id"], "status": "placed", "seller_notified": notified}
+
+
+@app.get("/api/orders")
+def orders(session_id: str = ""):
+    session = store.get(session_id or None)
+    key = _seller_key(session)
+    mine = [o for o in ORDERS.values() if o["product_id"] == session.id or o.get("seller") == key]
+    return {"orders": mine}
 
 
 @app.get("/media/{sid}")

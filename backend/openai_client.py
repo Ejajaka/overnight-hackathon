@@ -26,7 +26,7 @@ LISTING_FIELDS = [
 _CARE_WORDS = {"wash", "washing", "washable", "dry", "clean", "cleaning", "iron", "bleach", "detergent", "dryclean"}
 _CULTURAL_WORDS = {"symbol", "symbolize", "symbolizes", "symbolise", "symbolises", "meaning", "means", "heritage", "represents", "signifies", "auspicious", "prosperity", "fortune", "luck", "sacred", "ritual", "blessing"}
 _MATERIAL_WORDS = {"cotton", "silk", "wool", "linen", "jute", "dye", "indigo", "thread", "fibre", "fiber", "handspun", "clay", "brass", "wood"}
-_PROCESS_WORDS = {"made", "handmade", "woven", "weave", "loom", "handloom", "takes", "days", "weeks", "hand", "crafted", "produced", "dyed", "spin"}
+_PROCESS_WORDS = {"made", "handmade", "woven", "weave", "loom", "handloom", "takes", "days", "weeks", "week", "hand", "crafted", "produced", "dyed", "spin", "deliver", "delivered", "delivery", "ships", "shipping", "dispatch", "month", "months"}
 _VARIATION_WORDS = {"varies", "variation", "vary", "unique", "slight", "shade", "texture", "no two", "each piece"}
 _PHOTO_WORDS = {"photo", "photograph", "picture", "exact", "one of a kind", "one-of-a-kind", "pictured"}
 
@@ -238,9 +238,15 @@ def _mock_draft(facts: list[dict]) -> dict:
     care = first("care", "Machine wash on a gentle cycle and tumble dry low.")
     if first("care"):
         care = care.rstrip(".") + ". It is also machine washable."
-    production = first("process", "Each piece is made to order.")
-    if first("process"):
-        production = production.rstrip(".") + ". Ships within two days."
+    prod_bits = []
+    for _t in ("process", "making_time", "delivery"):
+        _v = first(_t)
+        if _v and _v not in prod_bits:
+            prod_bits.append(_v.rstrip("."))
+    if prod_bits:
+        production = ". ".join(prod_bits) + ". Ships within two days."
+    else:
+        production = "Each piece is made to order."
     variations = first("variation", "")
     cultural_base = first("cultural", "")
     cultural_note = (
