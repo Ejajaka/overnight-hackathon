@@ -1021,10 +1021,28 @@ async def twilio_webhook(request: Request):
 _tunnel_proc = None
 
 
-def _start_cloudflared(port):
+def _find_cloudflared():
     from shutil import which
 
-    exe = which("cloudflared")
+    found = which("cloudflared")
+    if found:
+        return found
+    candidates = [
+        r"C:\Program Files (x86)\cloudflared\cloudflared.exe",
+        r"C:\Program Files\cloudflared\cloudflared.exe",
+        os.path.expanduser(r"~\cloudflared\cloudflared.exe"),
+        "/usr/local/bin/cloudflared",
+        "/usr/bin/cloudflared",
+        "/opt/homebrew/bin/cloudflared",
+    ]
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
+def _start_cloudflared(port):
+    exe = _find_cloudflared()
     if not exe:
         return None
     proc = subprocess.Popen(
