@@ -94,15 +94,23 @@ Exercises the whole flow (interview, guard, publish, buyer page, restart, retry,
 non-answer handling, voice, reset, invalid input, Twilio webhook) and exits non-zero on
 any failure.
 
-## Go live on WhatsApp (Twilio sandbox)
+## Go live on WhatsApp (Twilio)
 
 You stay the **owner** (you hold the Twilio account + the app). The artisan side runs on
 WhatsApp and the **buyer/customer version is a shareable web link** you send to your friend.
 
-### 1. Twilio account
-Create a free account at https://www.twilio.com, then open
-**Messaging > Try it out > Send a WhatsApp message**. Copy your **Account SID** and
-**Auth Token** and put them in `.env`:
+### 1. Twilio account + connect your phone
+Create a free account at https://www.twilio.com, then
+**Messaging > Try out WhatsApp**. Twilio shows a WhatsApp number and a join code, e.g.:
+
+```
+Send a WhatsApp message to +1 737 250 8034 with code: join twilio-trial
+```
+
+From **your** phone, open WhatsApp and send that join message to that number. Twilio
+confirms you are connected. (This is the "with code" option - no business verification.)
+
+Put your credentials in `.env`:
 
 ```
 TWILIO_ACCOUNT_SID=AC...
@@ -122,21 +130,24 @@ It tries `cloudflared` first if installed (no account needed:
 (set `NGROK_AUTHTOKEN`, free). If both are blocked, run your own tunnel and set
 `PUBLIC_BASE_URL=https://...` in `.env`.
 
-### 3. Point the sandbox at your app
-In the sandbox settings, set **"When a message comes in"** to
-`https://<your-public-url>/webhook/twilio`, method **POST**.
+### 3. Point Twilio at your app
+On the **Try out WhatsApp** page, open the inbound message settings / auto-reply, choose
+**Custom** (a webhook), and set it to `https://<your-public-url>/webhook/twilio`
+(method **POST**, content type `application/x-www-form-urlencoded`). Save.
 
 ### 4. Test with your friend
-- **You (maker):** from your phone, send Twilio's join code to the sandbox number, then
-  message it. Send **photos** and **voice notes** - photos are attached to the listing and
-  voice notes are transcribed (with an OpenAI key).
-- When you reply **Publish**, the bot sends back the **buyer page link**. Forward that link
-  to your friend.
+- **You (maker):** message the WhatsApp number. Send **photos** and **voice notes** -
+  photos are attached to the listing and voice notes are transcribed (with an OpenAI key).
+- When you reply **Publish**, the bot messages back the **buyer page link**. Forward that
+  link to your friend.
 - **Your friend (customer):** opens the link - no WhatsApp needed. They see the photo,
   materials, care, production time, natural variations, and the provenance panel.
 
-Sessions are keyed by phone number, so several testers can use the same sandbox number
-without colliding. The Twilio path and the simulator share the same `handle_message` core.
+Sessions are keyed by phone number, so several testers can share one number without
+colliding. The Twilio path and the simulator share the same `handle_message` core.
+
+> Trial accounts can only message numbers that joined/verified. Your friend only needs the
+> buyer web link, so they do not need to join WhatsApp.
 
 ## Project layout
 
