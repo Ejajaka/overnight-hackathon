@@ -77,7 +77,70 @@ def chat_json(system: str, user: str) -> dict:
     return _extract_json(response.choices[0].message.content or "{}")
 
 
+def _is_gemini() -> bool:
+    return "generativelanguage.googleapis.com" in (settings.openai_base_url or "")
+
+
+_MIMES = {
+    ".webm": "audio/webm",
+    ".ogg": "audio/ogg",
+    ".oga": "audio/ogg",
+    ".mp3": "audio/mpeg",
+    ".mp4": "audio/mp4",
+    ".m4a": "audio/mp4",
+    ".wav": "audio/wav",
+}
+
+
+def _gemini_transcribe(data: bytes, mime: str) -> str:
+    import base64
+    import os as _os
+
+    import httpx
+
+    if not (settings.openai_api_key and _is_gemini()):
+        return ""
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{settings.openai_transcribe_model}:generateContent?key={settings.openai_api_key}"
+    )
+    payload = {
+        "contents": [
+            {
+                "parts": [
+                    {"text": "Transcribe this audio exactly. Reply with only the transcript text."},
+                    {
+                        "inline_data": {
+                            "mime_type": mime or "audio/webm",
+                            "data": base64.b64encode(data).decode(),
+                        }
+                    },
+                ]
+            }
+        ]
+    }
+    try:
+        response = httpx.post(url, json=payload, timeout=60)
+        response.raise_for_status()
+        candidates = response.json().get("candidates") or []
+        parts = ((candidates[0] if candidates else {}).get("content") or {}).get("parts") or []
+        return "".join(p.get("text", "") for p in parts).strip()
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 429:
+            print("[transcribe] Gemini quota exceeded (free tier ~20 req/day). Voice needs a paid key.")
+        return ""
+    except Exception:
+        return ""
+
+
 def transcribe(data: bytes, filename: str = "audio.webm") -> str:
+    import os as _os
+
+    mime = _MIMES.get(_os.path.splitext(filename or "")[1].lower(), "audio/webm")
+    if _is_gemini():
+        text = _gemini_transcribe(data, mime)
+        if text:
+            return text
     client = _client()
     if client is None:
         return ""
