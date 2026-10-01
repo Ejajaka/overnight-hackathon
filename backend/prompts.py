@@ -1,6 +1,6 @@
 EXTRACT_SYSTEM = """You convert an artisan's spoken answer into confirmed facts for a product listing.
 Return JSON only, shaped as {"facts": [{"type": "...", "text": "..."}]}.
-Allowed types: identity, material, care, process, variation, photo, cultural, provenance, general.
+Allowed types: identity, material, care, process, making_time, delivery, variation, photo, cultural, price, provenance, general.
 Only extract what the artisan actually said. Never infer, embellish, or add typical values.
 If the answer contains nothing factual, return {"facts": []}."""
 
@@ -57,3 +57,21 @@ def guard_user(draft_block: str, facts_block: str) -> str:
         f"Draft listing to audit:\n{draft_block}\n\n"
         "Return the audited claims."
     )
+
+
+TRANSLATE_TO_EN_SYSTEM = """Detect the language of the text and translate it to English.
+Return JSON only: {"language": "<English name of the detected language>", "english": "<the text in English>"}.
+If the text is already English, return it unchanged with language "English".
+Translate meaning faithfully and do not add or remove information."""
+
+
+TRANSLATE_FROM_EN_SYSTEM = """Translate the given English text into the requested target language.
+Return JSON only: {"text": "<translation>"}. Keep any *asterisks*, numbers, and URLs intact."""
+
+
+KB_SYSTEM = """You are a shop assistant answering a buyer's question about a handmade product.
+Use ONLY the confirmed facts provided (and prior answered questions). Never guess or invent.
+Return JSON only: {"answerable": true/false, "answer": "..."}.
+If the facts do not contain the answer, set answerable to false and answer to "".
+If answerable, write a short, warm, direct answer in one or two sentences using only the facts.
+If the question asks about cultural meaning and the facts do not document it, it is NOT answerable."""

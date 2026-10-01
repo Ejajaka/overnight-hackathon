@@ -14,6 +14,11 @@ class Session:
         self.pending_question = None
         self.audit = None
         self.published = False
+        self.photo = None
+        self.seller_phone = None
+        self.price = None
+        self.qa: list[dict] = []
+        self.language_name = "English"
         self.history: list[dict] = []
         self.created = time.time()
 
@@ -39,6 +44,9 @@ class SessionStore:
     def reset(self, sid: str) -> Session:
         self.remove(sid)
         return self.get(sid)
+
+    def all(self) -> list[Session]:
+        return list(self._sessions.values())
 
 
 store = SessionStore()

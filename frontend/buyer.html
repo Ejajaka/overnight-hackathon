@@ -35,7 +35,8 @@
     };
     const FACT_LABELS = {
       identity: "Identity", material: "Material", care: "Care", process: "Process",
-      variation: "Variation", photo: "Photo", cultural: "Cultural", provenance: "Provenance", general: "General",
+      variation: "Variation", photo: "Photo", cultural: "Cultural", provenance: "Provenance",
+      making_time: "Making time", delivery: "Delivery", price: "Price", general: "General",
     };
 
     function esc(value) {
@@ -52,6 +53,14 @@
         const safe = data.safe || {};
         document.getElementById("title").textContent = safe.title || "Handmade piece";
         document.getElementById("tagline").textContent = "Handmade · one of a kind";
+
+        if (data.photo_url) {
+          const img = document.createElement("img");
+          img.src = data.photo_url;
+          img.alt = "Product photo";
+          img.style.cssText = "width:100%;border-radius:12px;margin-bottom:16px";
+          document.querySelector(".buyer-wrap").insertBefore(img, document.getElementById("title"));
+        }
 
         const sections = document.getElementById("sections");
         for (const field of Object.keys(LABELS)) {

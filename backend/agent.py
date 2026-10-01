@@ -1,5 +1,6 @@
 from urllib.parse import quote
 
+from . import buyer
 from . import draft as draft_module
 from . import guard, interview, openai_client
 from .ledger import Ledger
@@ -9,6 +10,19 @@ INTRO = (
     "Hi! I turn your craft knowledge into a buyer-ready listing where nothing is invented. "
     "Every claim stays traceable to you."
 )
+
+SAMPLE_FACTS = [
+    {"type": "identity", "text": "Handwoven indigo shawl"},
+    {"type": "material", "text": "Handspun cotton with natural indigo dye"},
+    {"type": "making_time", "text": "About two weeks per piece"},
+    {"type": "delivery", "text": "Made to order; ships in about 3-4 weeks"},
+    {"type": "care", "text": "Hand wash cold, dry in shade, never machine wash"},
+    {"type": "process", "text": "Handwoven on a pit loom"},
+    {"type": "variation", "text": "Dye shade and weave texture vary slightly"},
+    {"type": "photo", "text": "The photo shows the exact piece the buyer receives; it is one of a kind"},
+    {"type": "cultural", "text": "A family motif; the meaning is not documented here"},
+    {"type": "price", "text": "1200"},
+]
 
 
 def _reply(messages, quick_replies=None, listing=None, stage=None, buyer_path=None):
@@ -55,6 +69,9 @@ def _extract(session: Session, text: str):
 def _commit_pending(session: Session):
     if session.pending_facts:
         session.ledger.add_many(session.pending_facts, source_turn=session.q_index)
+        for fact in session.pending_facts:
+            if fact.get("type") == "price":
+                session.price = openai_client.parse_price(fact.get("text", ""))
     session.pending_facts = []
 
 
@@ -127,13 +144,19 @@ def start(session: Session):
     session.audit = None
     session.published = False
     return _reply(
-        [INTRO, _current_question(session)["question"]],
+        [
+            INTRO,
+            "I'll always ask a few required questions "
+            + ", ".join(interview.REQUIRED_KEYS)
+            + " - then a couple of optional ones.",
+            _current_question(session)["question"],
+        ],
         _current_question(session)["quick_replies"],
         stage=session.stage,
     )
 
 
-def handle_message(session: Session, text: str):
+def _handle_english(session: Session, text: str):
     text = (text or "").strip()
     if not text:
         return _reply("Please send a message or a voice note.", stage=session.stage)
@@ -178,7 +201,7 @@ def handle_message(session: Session, text: str):
 
     if session.stage == "review":
         if interview.is_publish(text):
-            session.published = True
+            buyer.publish_product(session)
             return _reply(
                 [
                     "Published. Share this buyer page - it answers care, the exact piece, "
@@ -196,3 +219,43 @@ def handle_message(session: Session, text: str):
         return _listing_reply(session, prefix="Updated with your correction.")
 
     return start(session)
+
+
+def load_sample(session: Session):
+    session.ledger = Ledger()
+    session.ledger.add_many(SAMPLE_FACTS)
+    session.q_index = len(interview.QUESTIONS)
+    session.price = openai_client.parse_price(
+        next((f["text"] for f in SAMPLE_FACTS if f["type"] == "price"), "")
+    )
+    return _listing_reply(
+        session, prefix=f"Sample maker: {len(SAMPLE_FACTS)} confirmed facts loaded."
+    )
+
+
+def handle_photo(session: Session) -> str:
+    message = "Got your photo - I'll show this exact photo on the buyer page."
+    if session.stage == "interview" and _current_question(session)["key"] == "photo":
+        session.pending_facts = [
+            {"type": "photo", "text": "The attached photo shows the exact piece the buyer will receive."}
+        ]
+        message += " Is that correct?"
+        session.stage = "confirm"
+    return message
+
+
+def handle_message(session: Session, text: str):
+    original = (text or "").strip()
+    if original:
+        english, language = openai_client.translate_to_english(original)
+        if language and language.lower() != "english":
+            session.language_name = language
+        if english:
+            text = english
+    reply = _handle_english(session, text)
+    language = getattr(session, "language_name", "English")
+    if language and language.lower() != "english":
+        reply["messages"] = [
+            openai_client.translate_from_english(message, language) for message in reply["messages"]
+        ]
+    return reply

@@ -415,7 +415,7 @@ def build():
         [
             "The challenge is an overnight prototype: one command, no setup, no missing files.",
             "app.py auto-installs dependencies, embeds the backend and both UIs, starts the server, opens the browser, and (with --live) starts the tunnel.",
-            "A modular backend/frontend version also exists for readability and extension.",
+            "A modular backend/frontend version exists for readability and extension and mirrors the full flow: maker interview, guard, buyer storefront, knowledge-base Q&A with seller escalation, and orders.",
         ],
     )
     h2(doc, "7.7 In-memory sessions (trade-off)")

@@ -4,11 +4,17 @@ const input = document.getElementById("input");
 const sendBtn = document.getElementById("send");
 const micBtn = document.getElementById("mic");
 const resetBtn = document.getElementById("reset");
+const sampleBtn = document.getElementById("sample");
+const photoBtn = document.getElementById("photoBtn");
+const photoFile = document.getElementById("photoFile");
 const statusEl = document.getElementById("status");
 const toast = document.getElementById("toast");
 
 let sessionId = localStorage.getItem("stl_session") || null;
 let busy = false;
+let pendingQ = [];
+const seenQ = {};
+const seenOrders = {};
 
 const LABELS = [
   ["story", "Story"],
@@ -124,8 +130,81 @@ function handleResponse(resp) {
   if (resp.mock_llm) statusEl.textContent = "maker assistant · offline mock";
 }
 
+async function sendSellerAnswer(text) {
+  busy = true;
+  addBubble(text, true);
+  const typing = addTyping();
+  try {
+    const res = await fetch("/api/seller/answer", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: sessionId, answer: text }),
+    });
+    const data = await res.json();
+    typing.remove();
+    if (data.ok) {
+      pendingQ.shift();
+      addBubble("Sent to the buyer and saved to the knowledge base.", false);
+    } else {
+      addBubble("No pending question to answer.", false);
+    }
+  } catch (err) {
+    typing.remove();
+    addBubble("Could not send that answer.", false);
+  } finally {
+    busy = false;
+  }
+}
+
+async function pollSeller() {
+  try {
+    const res = await fetch("/api/seller/questions?session_id=" + (sessionId || ""));
+    const data = await res.json();
+    const fresh = (data.questions || []).filter((q) => !seenQ[q.question_id]);
+    fresh.forEach((q) => {
+      seenQ[q.question_id] = 1;
+      pendingQ.push(q);
+      addBubble(
+        "Buyer question: " +
+          q.question +
+          "\n\n(Reply here - your answer goes to the buyer and into the knowledge base.)",
+        false
+      );
+    });
+    if (fresh.length) setQuick(["Publish", "Fix something"]);
+  } catch (err) {}
+}
+
+async function pollOrders() {
+  try {
+    const res = await fetch("/api/orders?session_id=" + (sessionId || ""));
+    const data = await res.json();
+    (data.orders || []).forEach((o) => {
+      if (seenOrders[o.id]) return;
+      seenOrders[o.id] = 1;
+      addBubble(
+        "NEW ORDER for '" +
+          o.title +
+          "'\nQty: " +
+          o.quantity +
+          (o.price ? "\nPrice: " + o.price : "") +
+          "\nBuyer: " +
+          o.name +
+          (o.contact ? "\nContact: " + o.contact : "") +
+          (o.note ? "\nNote: " + o.note : "") +
+          "\n\nReach the buyer on WhatsApp to confirm.",
+        false
+      );
+    });
+  } catch (err) {}
+}
+
 async function send(text) {
   if (busy || !text) return;
+  const low = text.toLowerCase();
+  if (pendingQ.length && low !== "publish" && !low.includes("new listing")) {
+    return sendSellerAnswer(text);
+  }
   busy = true;
   setQuick([]);
   addBubble(text, true);
@@ -173,6 +252,56 @@ resetBtn.onclick = async () => {
   setQuick([]);
   send("hi");
 };
+
+sampleBtn.onclick = async () => {
+  if (busy) return;
+  busy = true;
+  setQuick([]);
+  chat.innerHTML = "";
+  addBubble("Show a sample maker", true);
+  const typing = addTyping();
+  try {
+    const res = await fetch("/api/sample", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: sessionId }),
+    });
+    const data = await res.json();
+    typing.remove();
+    handleResponse(data);
+  } catch (err) {
+    typing.remove();
+    addBubble("Could not load sample.", false);
+  } finally {
+    busy = false;
+  }
+};
+
+photoBtn.onclick = () => photoFile.click();
+photoFile.onchange = () => {
+  const file = photoFile.files[0];
+  if (file) sendPhoto(file);
+  photoFile.value = "";
+};
+
+async function sendPhoto(file) {
+  busy = true;
+  const typing = addTyping();
+  const form = new FormData();
+  form.append("session_id", sessionId || "");
+  form.append("image", file);
+  try {
+    const res = await fetch("/api/photo", { method: "POST", body: form });
+    const data = await res.json();
+    typing.remove();
+    handleResponse(data);
+  } catch (err) {
+    typing.remove();
+    addBubble("Could not send photo.", false);
+  } finally {
+    busy = false;
+  }
+}
 
 let recorder = null;
 let chunks = [];
@@ -224,4 +353,6 @@ async function sendVoice(blob) {
 
 window.addEventListener("DOMContentLoaded", () => {
   send("hi");
+  setInterval(pollSeller, 5000);
+  setInterval(pollOrders, 5000);
 });

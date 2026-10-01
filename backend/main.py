@@ -6,7 +6,7 @@ from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import agent, openai_client, transport
+from . import agent, buyer, interview, openai_client, transport
 from .config import settings
 from .sessions import store
 
@@ -40,14 +40,28 @@ def _respond(request: Request, session, reply: dict) -> dict:
     }
 
 
+def _media_url(session) -> str | None:
+    return f"/media/{quote(session.id)}" if session.photo else None
+
+
 @app.get("/")
 def index():
     return FileResponse(str(FRONTEND / "index.html"))
 
 
 @app.get("/buyer/{sid}")
-def buyer(sid: str):
+def buyer_page(sid: str):
     return FileResponse(str(FRONTEND / "buyer.html"))
+
+
+@app.get("/shop")
+def shop():
+    return FileResponse(str(FRONTEND / "shop.html"))
+
+
+@app.get("/shop/{sid}")
+def shop_product(sid: str):
+    return FileResponse(str(FRONTEND / "product.html"))
 
 
 @app.get("/api/health")
@@ -72,6 +86,17 @@ async def chat(request: Request):
     return _respond(request, session, reply)
 
 
+@app.post("/api/sample")
+async def sample(request: Request):
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    session = store.get(payload.get("session_id"))
+    reply = agent.load_sample(session)
+    return _respond(request, session, reply)
+
+
 @app.post("/api/reset")
 async def reset(request: Request):
     payload = await request.json()
@@ -84,8 +109,7 @@ async def reset(request: Request):
 @app.post("/api/voice")
 async def voice(request: Request, session_id: str = Form(""), audio: UploadFile = File(...)):
     session = store.get(session_id or None)
-    data = await audio.read()
-    text = openai_client.transcribe(data, audio.filename or "audio.webm")
+    text = openai_client.transcribe(await audio.read(), audio.filename or "audio.webm")
     if not text:
         return {
             "session_id": session.id,
@@ -106,6 +130,23 @@ async def voice(request: Request, session_id: str = Form(""), audio: UploadFile 
     return result
 
 
+@app.post("/api/photo")
+async def photo(request: Request, session_id: str = Form(""), image: UploadFile = File(...)):
+    session = store.get(session_id or None)
+    data = await image.read()
+    session.photo = {"bytes": data, "content_type": image.content_type or "image/jpeg"}
+    message = agent.handle_photo(session)
+    return {
+        "session_id": session.id,
+        "messages": [message],
+        "quick_replies": ["Yes", "No, let me fix it"] if session.stage == "confirm" else [],
+        "listing": agent._listing_payload(session) if session.audit else None,
+        "stage": session.stage,
+        "buyer_url": "",
+        "mock_llm": not settings.llm_enabled,
+    }
+
+
 @app.get("/api/listing/{sid}")
 def listing(sid: str):
     session = store.get(sid)
@@ -119,27 +160,150 @@ def listing(sid: str):
         "claims": session.audit["claims"],
         "facts": session.ledger.all(),
         "published": session.published,
+        "photo_url": _media_url(session),
+        "price": session.price,
     }
+
+
+@app.get("/api/catalog")
+def catalog():
+    products = []
+    for session in store.all():
+        if not session.published or not session.audit:
+            continue
+        safe = session.audit["safe"]
+        products.append(
+            {
+                "id": session.id,
+                "title": safe.get("title") or "Handmade piece",
+                "materials": safe.get("materials", ""),
+                "care": safe.get("care", ""),
+                "price": session.price,
+                "photo_url": _media_url(session),
+                "path": f"/shop/{quote(session.id)}",
+            }
+        )
+    return {"products": products}
+
+
+@app.post("/api/buyer/ask")
+async def buyer_ask(request: Request):
+    payload = await request.json()
+    session = store.get(payload.get("product_id"))
+    if not session.audit:
+        return JSONResponse({"error": "unknown product"}, status_code=404)
+    question = (payload.get("question") or "").strip()
+    if not question:
+        return JSONResponse({"error": "empty question"}, status_code=400)
+    entry = buyer.ask_buyer_question(session, question, payload.get("buyer_id"))
+    return {
+        "status": entry["status"],
+        "answer": entry["answer"],
+        "question_id": entry["id"],
+        "seller_notified": entry["status"] == "pending",
+    }
+
+
+@app.get("/api/buyer/thread/{product_id}")
+def buyer_thread(product_id: str):
+    session = store.get(product_id)
+    return {"qa": session.qa}
+
+
+@app.get("/api/seller/questions")
+def seller_questions(session_id: str = ""):
+    session = store.get(session_id or None)
+    return {"session_id": session.id, "questions": buyer.seller_questions(session)}
+
+
+@app.post("/api/seller/answer")
+async def seller_answer(request: Request):
+    payload = await request.json()
+    session = store.get(payload.get("session_id"))
+    entry = buyer.answer_seller_question(buyer.seller_key(session), payload.get("answer", ""))
+    if not entry:
+        return JSONResponse({"error": "no pending question"}, status_code=404)
+    return {
+        "ok": True,
+        "question": entry["question"],
+        "answer": entry["answer"],
+        "product_id": session.id,
+    }
+
+
+@app.post("/api/buyer/order")
+async def buyer_order(request: Request):
+    payload = await request.json()
+    session = store.get(payload.get("product_id"))
+    if not session.audit:
+        return JSONResponse({"error": "unknown product"}, status_code=404)
+    return buyer.create_order(session, payload)
+
+
+@app.get("/api/orders")
+def orders(session_id: str = ""):
+    session = store.get(session_id or None)
+    return {"orders": buyer.orders_for(session)}
+
+
+@app.get("/media/{sid}")
+def media(sid: str):
+    session = store.get(sid)
+    if not session.photo:
+        return Response(status_code=404)
+    return Response(content=session.photo["bytes"], media_type=session.photo["content_type"])
+
+
+async def _download_media(url: str) -> bytes:
+    auth = None
+    if settings.twilio_enabled:
+        auth = (settings.twilio_account_sid, settings.twilio_auth_token)
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get(url, auth=auth, follow_redirects=True)
+        return response.content
 
 
 @app.post("/webhook/twilio")
 async def twilio_webhook(request: Request):
     form = dict((await request.form()).items())
-    incoming = transport.from_twilio(form)
-    session = store.get(incoming["user_id"])
+    media_count = int(form.get("NumMedia", "0") or "0")
+    user_id = transport.normalize_number(form.get("From", ""))
+    session = store.get(user_id)
+    text = (form.get("Body", "") or "").strip()
 
-    text = incoming["text"]
-    if incoming.get("media_url"):
+    for index in range(media_count):
+        media_url = form.get(f"MediaUrl{index}")
+        content_type = form.get(f"MediaContentType{index}", "") or ""
+        if not media_url:
+            continue
         try:
-            auth = None
-            if settings.twilio_enabled:
-                auth = (settings.twilio_account_sid, settings.twilio_auth_token)
-            async with httpx.AsyncClient() as client:
-                media = await client.get(incoming["media_url"], auth=auth, follow_redirects=True)
-                text = openai_client.transcribe(media.content, "audio.ogg")
+            data = await _download_media(media_url)
         except Exception:
-            text = text or ""
+            continue
+        if content_type.startswith("image"):
+            session.photo = {"bytes": data, "content_type": content_type}
+        elif content_type.startswith("audio") or content_type in ("video/ogg", "application/ogg"):
+            text = openai_client.transcribe(data, "audio.ogg") or text
+
+    if (
+        buyer.PENDING_BY_SELLER.get(user_id)
+        and not interview.is_publish(text)
+        and not interview.is_new_listing(text)
+        and (session.stage == "idle" or media_count > 0)
+    ):
+        entry = buyer.answer_seller_question(user_id, text)
+        if entry:
+            return Response(
+                content=transport.twiml(
+                    ["Thanks - that has been sent to the buyer and added to the knowledge base."]
+                ),
+                media_type="application/xml",
+            )
 
     reply = agent.handle_message(session, text)
-    xml = transport.twiml(reply["messages"])
-    return Response(content=xml, media_type="application/xml")
+    messages = list(reply["messages"])
+    if reply.get("buyer_path") and reply["listing"] and reply["listing"].get("published"):
+        url = (settings.public_base_url or "") + reply["buyer_path"]
+        if url:
+            messages.append(f"Buyer page: {url}")
+    return Response(content=transport.twiml(messages), media_type="application/xml")

@@ -82,6 +82,52 @@ def main():
 
     buyer = client.get(f"/buyer/{sid}")
     check("buyer page served", buyer.status_code == 200)
+    check("shop page served", client.get("/shop").status_code == 200)
+    check("product page served", client.get(f"/shop/{sid}").status_code == 200)
+
+    catalog = client.get("/api/catalog").json()
+    product = next((p for p in catalog["products"] if p["id"] == sid), None)
+    check("catalog has product", product is not None)
+    check("catalog shows price", product and product["price"] == 1200)
+
+    a1 = client.post(
+        "/api/buyer/ask",
+        json={"product_id": sid, "buyer_id": "b1", "question": "Is it machine washable?"},
+    ).json()
+    check("care question answered", a1["status"] == "answered", str(a1))
+    a2 = client.post(
+        "/api/buyer/ask",
+        json={"product_id": sid, "buyer_id": "b1", "question": "When will my order arrive?"},
+    ).json()
+    check("delivery question answered", a2["status"] == "answered", str(a2))
+    a3 = client.post(
+        "/api/buyer/ask",
+        json={"product_id": sid, "buyer_id": "b1", "question": "How long does it take to make?"},
+    ).json()
+    check("making-time question answered", a3["status"] == "answered", str(a3))
+    a4 = client.post(
+        "/api/buyer/ask",
+        json={"product_id": sid, "buyer_id": "b1", "question": "Can you make it in bright pink?"},
+    ).json()
+    check("unknown question escalated", a4["status"] == "pending", str(a4))
+
+    seller_q = client.get(f"/api/seller/questions?session_id={sid}").json()
+    check("seller has pending question", len(seller_q["questions"]) >= 1)
+    answered = client.post(
+        "/api/seller/answer",
+        json={"session_id": sid, "answer": "Yes, pink is possible and takes one extra week."},
+    ).json()
+    check("seller answer accepted", answered.get("ok") is True)
+    thread = client.get(f"/api/buyer/thread/{sid}").json()
+    check("buyer sees answer", any(x["status"] == "answered" and "pink" in x["answer"].lower() for x in thread["qa"]))
+
+    order = client.post(
+        "/api/buyer/order",
+        json={"product_id": sid, "buyer_id": "b1", "name": "Asha", "contact": "+910000000000", "quantity": 2},
+    ).json()
+    check("order placed", bool(order.get("order_id")), str(order))
+    orders = client.get(f"/api/orders?session_id={sid}").json()
+    check("seller sees order", any(o["id"] == order["order_id"] for o in orders["orders"]))
 
     restarted = chat("Start a new listing", sid)
     check("restart begins fresh interview", restarted["stage"] == "interview")

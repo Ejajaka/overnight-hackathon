@@ -178,20 +178,23 @@ docs/
   Architecture_and_Proposed_Solution.docx   full architecture + rationale document
 scripts/make_docs.py  regenerates the Word document
 backend/
-  main.py           FastAPI app, chat/voice/listing endpoints, Twilio webhook
-  agent.py          interview -> draft -> guard -> reply orchestration
-  interview.py      guided questions and reply keywords
+  main.py           FastAPI app: maker, storefront, buyer Q&A, orders, Twilio webhook
+  agent.py          interview -> draft -> guard -> reply orchestration + translation
+  interview.py      guided questions (compulsory + optional) and reply keywords
   ledger.py         the confirmed-facts Claim Ledger
   draft.py          listing generation
   guard.py          claim audit + deterministic repair  <-- core contribution
-  openai_client.py  OpenAI wrapper + offline mock
-  prompts.py        extraction, drafting, and guard prompts
-  transport.py      Twilio normalization + TwiML
+  buyer.py          knowledge-base Q&A, seller escalation, orders
+  openai_client.py  OpenAI wrapper + offline mock + KB answering + translation
+  prompts.py        extraction, drafting, guard, KB, and translation prompts
+  transport.py      Twilio normalization, TwiML, WhatsApp send
   sessions.py       in-memory session store
 frontend/
   index.html        WhatsApp-style simulator
-  app.js            chat logic, quick replies, voice recording, listing card
+  app.js            chat logic, quick replies, voice, seller Q&A and order polling
   buyer.html        buyer page with provenance
+  shop.html         storefront listing all published products (cart)
+  product.html      product detail with buyer Q&A and Buy now
   styles.css
 scripts/demo.py     end-to-end command-line walkthrough
 ```

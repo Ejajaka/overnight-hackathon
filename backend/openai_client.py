@@ -323,3 +323,121 @@ def _has_support(ctype: str, sentence: str, facts_by_type: dict[str, list[str]])
         if overlap >= 0.3:
             return True
     return False
+
+
+def parse_price(text: str) -> Optional[int]:
+    digits = re.sub(r"[^0-9]", "", text or "")
+    return int(digits) if digits else None
+
+
+_KB_CARE = {"wash", "washing", "washable", "dry", "clean", "cleanable", "launder"}
+_KB_PHOTO = {"photo", "photograph", "picture", "exact", "same", "receive"}
+_KB_TIME = {"long", "time", "delivery", "deliver", "ship", "shipping", "weeks", "days", "takes", "wait", "ready"}
+_KB_VARY = {"vary", "varies", "variation", "differ", "difference", "unique", "identical", "same", "consistent"}
+_KB_CULTURE = {"meaning", "mean", "symbol", "symbolise", "symbolize", "culture", "cultural", "tradition", "heritage", "significance"}
+_KB_MATERIAL = {"material", "fabric", "made", "cotton", "silk", "wool", "dye", "colour", "color", "thread"}
+_KB_DELIVERY = {"deliver", "delivered", "delivery", "arrive", "arrives", "arrival", "shipping", "ship", "ships", "dispatch", "courier", "receive"}
+_KB_MAKING = {"make", "makes", "making", "produce", "produced", "production", "long", "weeks", "week", "days", "day", "takes", "take", "craft"}
+_KB_REQUEST_PHRASES = (
+    "can you",
+    "could you",
+    "would you",
+    "do you",
+    "make it",
+    "make this",
+    "custom",
+    "customi",
+    "available in",
+    "come in",
+    "other colour",
+    "other color",
+    "different colour",
+    "different color",
+    "another colour",
+    "another color",
+)
+
+
+def mock_kb_answer(question: str, facts: list[dict], qa_history: list[dict]) -> Optional[str]:
+    ql = (question or "").lower()
+    qt = _tokens(question)
+    for item in reversed(qa_history):
+        if item.get("status") == "answered" and item.get("answer"):
+            base = _tokens(item.get("question", ""))
+            if base and len(base & qt) / max(len(base), 1) >= 0.5:
+                return item["answer"]
+    if any(phrase in ql for phrase in _KB_REQUEST_PHRASES):
+        return None
+    by: dict[str, list[str]] = {}
+    for fact in facts:
+        by.setdefault(fact["type"], []).append(fact["text"])
+
+    def first(ftype: str) -> Optional[str]:
+        values = by.get(ftype)
+        return values[0] if values else None
+
+    checks = [
+        (_KB_CARE, "care"),
+        (_KB_DELIVERY, "delivery"),
+        (_KB_MAKING, "making_time"),
+        (_KB_PHOTO, "photo"),
+        (_KB_TIME, "process"),
+        (_KB_VARY, "variation"),
+        (_KB_CULTURE, "cultural"),
+        (_KB_MATERIAL, "material"),
+    ]
+    for words, ftype in checks:
+        if qt & words and first(ftype):
+            return first(ftype)
+    return None
+
+
+def kb_answer(question: str, facts: list[dict], qa_history: list[dict]) -> Optional[str]:
+    client = _client()
+    if client is None:
+        return mock_kb_answer(question, facts, qa_history)
+    try:
+        prior = (
+            "\n".join(f"Q: {i['question']}\nA: {i['answer']}" for i in qa_history if i.get("answer"))
+            or "(none)"
+        )
+        payload = chat_json(
+            prompts.KB_SYSTEM,
+            f"Confirmed facts:\n{_facts_block(facts)}\n\nPreviously answered:\n{prior}\n\n"
+            f"Buyer question: {question}\n\nAnswer.",
+        )
+        answer = str(payload.get("answer", "")).strip()
+        if payload.get("answerable") and answer:
+            return answer
+        return None
+    except Exception:
+        return mock_kb_answer(question, facts, qa_history)
+
+
+def translate_to_english(text: str) -> tuple[str, str]:
+    client = _client()
+    if client is None or not (text or "").strip():
+        return text, "English"
+    try:
+        payload = chat_json(prompts.TRANSLATE_TO_EN_SYSTEM, text)
+        english = str(payload.get("english") or text).strip()
+        language = str(payload.get("language") or "English").strip()
+        return english, language
+    except Exception:
+        return text, "English"
+
+
+def translate_from_english(text: str, language: str) -> str:
+    if not text or not language or language.lower() == "english":
+        return text
+    client = _client()
+    if client is None:
+        return text
+    try:
+        payload = chat_json(
+            prompts.TRANSLATE_FROM_EN_SYSTEM,
+            f"Target language: {language}\n\nText:\n{text}",
+        )
+        return str(payload.get("text") or text).strip()
+    except Exception:
+        return text

@@ -1,5 +1,7 @@
 from xml.sax.saxutils import escape
 
+import httpx
+
 from .config import settings
 
 
@@ -21,6 +23,25 @@ def from_twilio(form: dict) -> dict:
 def twiml(messages: list[str]) -> str:
     body = "".join(f"<Message>{escape(m)}</Message>" for m in messages if m)
     return f"<?xml version='1.0' encoding='UTF-8'?><Response>{body}</Response>"
+
+
+def send_whatsapp(to: str, body: str) -> bool:
+    if not settings.twilio_enabled or not settings.twilio_whatsapp_from:
+        return False
+    try:
+        url = (
+            "https://api.twilio.com/2010-04-01/Accounts/"
+            f"{settings.twilio_account_sid}/Messages.json"
+        )
+        response = httpx.post(
+            url,
+            auth=(settings.twilio_account_sid, settings.twilio_auth_token),
+            data={"From": settings.twilio_whatsapp_from, "To": to, "Body": body},
+            timeout=20,
+        )
+        return response.status_code < 300
+    except Exception:
+        return False
 
 
 def absolute_buyer_url(path: str) -> str:
