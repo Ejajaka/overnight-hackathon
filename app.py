@@ -1023,6 +1023,8 @@ def start(session):
     session.q_index = 0
     session.audit = None
     session.published = False
+    session.price = None
+    session.pending_facts = []
     return _reply(
         [
             INTRO,
@@ -1040,6 +1042,12 @@ def _handle_english(session, text):
         return _reply("Please send a message or a voice note.", stage=session.stage)
 
     if session.stage == "idle":
+        return start(session)
+
+    if session.stage != "idle" and is_new_listing(text) and not is_publish(text):
+        session.ledger = Ledger()
+        session.photo = None
+        session.audit = None
         return start(session)
 
     if session.stage == "review" and not is_publish(text) and is_new_listing(text):
