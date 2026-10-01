@@ -1316,6 +1316,7 @@ async def sample(request: Request):
     session.ledger = Ledger()
     session.ledger.add_many(SAMPLE_FACTS)
     session.q_index = len(QUESTIONS)
+    session.price = _parse_price(next((f["text"] for f in SAMPLE_FACTS if f["type"] == "price"), ""))
     reply = _listing_reply(session, prefix=f"Sample maker: {len(SAMPLE_FACTS)} confirmed facts loaded.")
     return _respond(request, session, reply)
 

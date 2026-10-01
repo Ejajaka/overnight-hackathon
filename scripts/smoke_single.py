@@ -69,6 +69,10 @@ def main():
     check("catalog has product", product is not None)
     check("catalog shows price", product and product["price"] == 1200)
 
+    sample = client.post("/api/sample", json={}).json()
+    sample_listing = client.get(f"/api/listing/{sample['session_id']}").json()
+    check("sample carries price", sample_listing.get("price") == 1200, str(sample_listing.get("price")))
+
     # knowledge-base answered instantly
     a1 = client.post("/api/buyer/ask", json={"product_id": sid, "buyer_id": "b1", "question": "Is it machine washable?"}).json()
     check("care question answered", a1["status"] == "answered", str(a1))
