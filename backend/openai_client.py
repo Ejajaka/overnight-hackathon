@@ -301,8 +301,27 @@ def _classify(sentence: str) -> str:
     return "general"
 
 
+_BARE_CONFIRM = {
+    "yes", "y", "yeah", "yep", "confirm", "confirmed", "correct", "right",
+    "ok", "okay", "sure", "no", "n", "nope",
+}
+
+
+def is_bare_confirm(text: str) -> bool:
+    return re.sub(r"[^a-z]", "", (text or "").lower()) in {w for w in _BARE_CONFIRM}
+
+
+def _clean_sentence(text: str) -> str:
+    text = re.sub(r"\s+", " ", (text or "").strip()).strip(" \"'`")
+    if text and not text[0].isupper():
+        text = text[0].upper() + text[1:]
+    if text and text[-1] not in ".!?":
+        text += "."
+    return text
+
+
 def _mock_extract(question_type: str, answer: str) -> list[dict]:
-    answer = answer.strip()
+    answer = _clean_sentence(answer)
     if not answer:
         return []
     return [{"type": question_type, "text": answer}]

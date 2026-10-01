@@ -48,7 +48,17 @@ def main():
     for answer in answers:
         chat(answer, sid)
         reply = chat("Yes", sid)
-    check("reaches review stage", reply["stage"] == "review", reply.get("stage"))
+    check("asks for a product photo", reply["stage"] == "photo", reply.get("stage"))
+
+    photo = client.post(
+        "/api/photo",
+        data={"session_id": sid},
+        files={"image": ("piece.jpg", b"\xff\xd8\xff\xe0fake", "image/jpeg")},
+    ).json()
+    check("photo upload reaches review", photo["stage"] == "review", str(photo.get("stage")))
+    reply = photo
+
+    removed_types = sorted(c["type"] for c in reply["listing"]["removed"])
 
     removed_types = sorted(c["type"] for c in reply["listing"]["removed"])
     check("guard blocks care claim", "care" in removed_types, str(removed_types))
@@ -57,9 +67,11 @@ def main():
 
     listing = client.get(f"/api/listing/{sid}").json()
     check("price captured", listing["price"] == 1200, str(listing.get("price")))
+    check("photo stored", bool(listing.get("photo_url")))
     facts = {f["type"] for f in listing["facts"]}
     check("delivery fact stored", "delivery" in facts, str(facts))
     check("making_time fact stored", "making_time" in facts, str(facts))
+    check("colour fact stored", "colour" in facts, str(facts))
 
     published = chat("Publish", sid)
     check("publish works", (published.get("listing") or {}).get("published") is True)
@@ -68,6 +80,16 @@ def main():
     product = next((p for p in catalog["products"] if p["id"] == sid), None)
     check("catalog has product", product is not None)
     check("catalog shows price", product and product["price"] == 1200)
+    check("catalog shows colour", product and product.get("colour"), str(product.get("colour")) if product else "")
+    check("catalog shows photo", product and product.get("photo_url"))
+
+    # publish is blocked until a photo exists
+    s2 = chat("hi")["session_id"]
+    for answer in answers:
+        chat(answer, s2)
+        chat("Yes", s2)
+    blocked = chat("Publish", s2)
+    check("publish blocked without photo", blocked["stage"] == "photo", blocked.get("stage"))
 
     sample = client.post("/api/sample", json={}).json()
     sample_listing = client.get(f"/api/listing/{sample['session_id']}").json()

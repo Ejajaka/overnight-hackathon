@@ -6,6 +6,12 @@ QUESTIONS = [
         "quick_replies": ["It's a handwoven shawl"],
     },
     {
+        "key": "colour",
+        "required": True,
+        "question": "What colour(s) is it? Describe the main colours.",
+        "quick_replies": ["Indigo blue and off-white"],
+    },
+    {
         "key": "material",
         "required": True,
         "question": "What is it made from? Tell me the materials and dyes.",

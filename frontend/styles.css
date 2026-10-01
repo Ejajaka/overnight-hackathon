@@ -237,7 +237,8 @@ body {
 .product-card h3 { margin: 0 0 4px; font-size: 16px; }
 .product-card p { margin: 0; color: #667781; font-size: 13px; }
 .product-card .pc-link { margin-top: 10px; color: #128c7e; font-weight: 600; font-size: 13px; }
-.product-card .price { color: #075e54; font-weight: 700; margin-top: 6px; font-size: 15px; }
+.product-card .price { color: #075e54; font-weight: 700; font-size: 16px; }
+.product-card .colour { color: #667781; font-size: 13px; margin-top: 4px; }
 .empty { color: #667781; text-align: center; padding: 60px 0; font-size: 15px; }
 .qa-wrap { max-width: 640px; margin: 28px auto 0; }
 .qa-wrap h2 { font-size: 15px; color: #075e54; margin: 0 0 10px; }

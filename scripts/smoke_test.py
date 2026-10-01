@@ -4,7 +4,9 @@ import sys
 
 from fastapi.testclient import TestClient
 
+from backend import interview
 from backend.main import app
+from backend.sessions import store
 
 client = TestClient(app)
 FAILURES = []
@@ -26,6 +28,7 @@ def chat(message, sid=None):
 
 ANSWERS = [
     "Handwoven wool shawl",
+    "Cream and natural brown",
     "Pure wool with natural dyes",
     "One week per piece",
     "Ships in about two weeks",
@@ -148,12 +151,29 @@ def main():
 
     non = chat("hi")
     sid2 = non["session_id"]
-    answers2 = list(ANSWERS)
-    answers2[4] = "I don't know"
-    answers2[8] = "no idea"
-    for answer in answers2:
-        chat(answer, sid2)
-        chat("Yes", sid2)
+    # Answer each question by matching its text; say "I don't know" for care and cultural.
+    topup = {
+        "identity": "Handwoven wool shawl",
+        "colour": "Cream and natural brown",
+        "material": "Pure wool with natural dyes",
+        "making_time": "One week per piece",
+        "delivery": "Ships in about two weeks",
+        "care": "I don't know",
+        "process": "Woven on a handloom",
+        "variation": "Colour and texture vary slightly",
+        "photo": "Yes, this is the exact piece, one of a kind",
+        "cultural": "no idea",
+        "price": "1200",
+    }
+    for _ in range(40):
+        session2 = store.get(sid2)
+        if session2.stage == "review":
+            break
+        key = interview.QUESTIONS[session2.q_index]["key"] if session2.q_index < len(interview.QUESTIONS) else None
+        text = topup.get(key, "Yes")
+        reply = chat(text, sid2)
+        if reply["stage"] == "confirm":
+            chat("Yes", sid2)
     listing2 = client.get(f"/api/listing/{sid2}").json()
     check(
         "care fallback when unconfirmed",

@@ -1,7 +1,9 @@
 EXTRACT_SYSTEM = """You convert an artisan's spoken answer into confirmed facts for a product listing.
 Return JSON only, shaped as {"facts": [{"type": "...", "text": "..."}]}.
-Allowed types: identity, material, care, process, making_time, delivery, variation, photo, cultural, price, provenance, general.
-Only extract what the artisan actually said. Never infer, embellish, or add typical values.
+Allowed types: identity, colour, material, care, process, making_time, delivery, variation, photo, cultural, price, provenance, general.
+Rewrite each fact as one short, clear, grammatically correct English sentence. Fix grammar and
+spelling, but keep the artisan's exact meaning and their own terms. Never infer, embellish, or add
+any detail, number, material, or claim they did not give. Do not translate away proper nouns.
 If the answer contains nothing factual, return {"facts": []}."""
 
 
@@ -10,7 +12,8 @@ def extract_user(question_type: str, question: str, answer: str) -> str:
         f"Question topic: {question_type}\n"
         f"Question asked: {question}\n"
         f"Artisan answer: {answer}\n\n"
-        "Extract the minimal set of facts, each as one short sentence in the artisan's own terms."
+        "Extract the minimal set of facts. Rewrite each as one short, grammatically correct English "
+        "sentence that preserves the artisan's exact meaning and adds nothing."
     )
 
 

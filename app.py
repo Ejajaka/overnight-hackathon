@@ -93,8 +93,10 @@ LLM_ENABLED = bool(OPENAI_API_KEY) and not USE_MOCK_LLM
 # --------------------------------------------------------------------------
 EXTRACT_SYSTEM = """You convert an artisan's spoken answer into confirmed facts for a product listing.
 Return JSON only, shaped as {"facts": [{"type": "...", "text": "..."}]}.
-Allowed types: identity, material, care, process, variation, photo, cultural, provenance, general.
-Only extract what the artisan actually said. Never infer, embellish, or add typical values.
+Allowed types: identity, colour, material, care, process, making_time, delivery, variation, photo, cultural, price, provenance, general.
+Rewrite each fact as one short, clear, grammatically correct English sentence. Fix grammar and
+spelling, but keep the artisan's exact meaning and their own terms. Never infer, embellish, or add
+any detail, number, material, or claim they did not give. Do not translate away proper nouns.
 If the answer contains nothing factual, return {"facts": []}."""
 
 DRAFT_SYSTEM = """You are an expert marketplace copywriter for handmade crafts.
@@ -338,6 +340,19 @@ def _groq_transcribe(data, filename="audio.webm"):
         return ""
 
 
+def _clean_sentence(text):
+    import re as _re
+
+    text = (text or "").strip()
+    text = _re.sub(r"\s+", " ", text)
+    text = text.strip(" \"'`")
+    if text and not text[0].isupper():
+        text = text[0].upper() + text[1:]
+    if text and text[-1] not in ".!?":
+        text += "."
+    return text
+
+
 def extract_facts(question_type, question, answer):
     client = _client()
     if client is None:
@@ -346,11 +361,12 @@ def extract_facts(question_type, question, answer):
         payload = _chat_json(
             EXTRACT_SYSTEM,
             f"Question topic: {question_type}\nQuestion asked: {question}\nArtisan answer: {answer}\n\n"
-            "Extract the minimal set of facts, each as one short sentence in the artisan's own terms.",
+            "Extract the minimal set of facts. Rewrite each as one short, grammatically correct English "
+            "sentence that preserves the artisan's exact meaning and adds nothing.",
         )
         cleaned = []
         for fact in payload.get("facts") or []:
-            text = str(fact.get("text", "")).strip()
+            text = _clean_sentence(fact.get("text", ""))
             if text:
                 cleaned.append({"type": question_type, "text": text})
         return cleaned or _mock_extract(question_type, answer)
@@ -400,7 +416,7 @@ def audit_listing(draft, facts):
 
 
 def _mock_extract(question_type, answer):
-    answer = (answer or "").strip()
+    answer = _clean_sentence(answer)
     if not answer:
         return []
     return [{"type": question_type, "text": answer}]
@@ -668,6 +684,7 @@ class Ledger:
 # --------------------------------------------------------------------------
 QUESTIONS = [
     {"key": "identity", "required": True, "question": "Let's build your listing. What is this piece called, and what is it?", "quick_replies": ["It's a handwoven shawl"]},
+    {"key": "colour", "required": True, "question": "What colour(s) is it? Describe the main colours.", "quick_replies": ["Indigo blue and off-white"]},
     {"key": "material", "required": True, "question": "What is it made from? Tell me the materials and dyes.", "quick_replies": ["Handspun cotton with natural indigo dye"]},
     {"key": "making_time", "required": True, "question": "Roughly how long does one piece take to make?", "quick_replies": ["About two weeks per piece"]},
     {"key": "delivery", "required": True, "question": "After an order, roughly how long until it is delivered?", "quick_replies": ["Made to order; ships in about 3-4 weeks"]},
@@ -699,6 +716,11 @@ def is_confirm(text):
     if norm in CONFIRM_WORDS:
         return True
     return bool(words & CONFIRM_WORDS) and not bool(words & DENY_WORDS)
+
+
+def is_bare_confirm(text):
+    stripped = "".join(ch for ch in _normalize(text) if ch.isalpha())
+    return stripped in {w for w in CONFIRM_WORDS | DENY_WORDS}
 
 
 def is_retry(text):
@@ -892,6 +914,7 @@ INTRO = "Hi! I turn your craft knowledge into a buyer-ready listing where nothin
 
 SAMPLE_FACTS = [
     {"type": "identity", "text": "Handwoven indigo shawl"},
+    {"type": "colour", "text": "Indigo blue and off-white"},
     {"type": "material", "text": "Handspun cotton with natural indigo dye"},
     {"type": "making_time", "text": "About two weeks per piece"},
     {"type": "delivery", "text": "Made to order; ships in about 3-4 weeks"},
@@ -936,6 +959,14 @@ def _extract(session, text):
 def _advance(session):
     session.q_index += 1
     if session.q_index >= len(QUESTIONS):
+        if not session.photo:
+            session.stage = "photo"
+            return _reply(
+                "Last step: send me a *photo* of this exact piece so I can put it on your shop page "
+                "(tap the camera icon here, or send the image on WhatsApp).",
+                [],
+                stage="photo",
+            )
         return _listing_reply(session, prefix="All facts confirmed.")
     return _ask_question(session)
 
@@ -1013,7 +1044,19 @@ def _handle_english(session, text):
 
     if session.stage == "review" and not is_publish(text) and is_new_listing(text):
         session.ledger = Ledger()
+        session.photo = None
         return start(session)
+
+    if session.stage == "photo":
+        if is_new_listing(text):
+            session.ledger = Ledger()
+            session.photo = None
+            return start(session)
+        return _reply(
+            "Please send a *photo* of this piece - I need it before I can publish to your shop page.",
+            [],
+            stage="photo",
+        )
 
     if session.stage == "confirm":
         if is_confirm(text):
@@ -1033,6 +1076,9 @@ def _handle_english(session, text):
         return _ask_confirm(session)
 
     if session.stage == "interview":
+        if is_bare_confirm(text):
+            question = _current_question(session)
+            return _reply(question["question"], question["quick_replies"], stage="interview")
         if is_non_answer(text):
             session.pending_facts = []
             key = _current_question(session)["key"]
@@ -1044,6 +1090,13 @@ def _handle_english(session, text):
 
     if session.stage == "review":
         if is_publish(text):
+            if not session.photo:
+                session.stage = "photo"
+                return _reply(
+                    "I still need a *photo* of this piece before publishing. Please send it now.",
+                    [],
+                    stage="photo",
+                )
             publish_product(session)
             return _reply(
                 ["Published. Share this buyer page - it answers care, the exact piece, why it takes longer, and natural variations, all from your confirmed facts."],
@@ -1247,19 +1300,10 @@ SHOP_EXTRA_CSS = """
 SHOP_JS = r"""
 function esc(v){return String(v||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
 const grid=document.getElementById("grid");
-if(!localStorage.getItem("buyer_id"))localStorage.setItem("buyer_id","b"+Math.random().toString(36).slice(2,10));
-function getCart(){try{return JSON.parse(localStorage.getItem("cart")||"[]")}catch(e){return[]}}
-function setCart(c){localStorage.setItem("cart",JSON.stringify(c));renderCart()}
-function renderCart(){const c=getCart();const bar=document.getElementById("cartbar");if(!bar)return;bar.style.display=c.length?"flex":"none";document.getElementById("cartcount").textContent=c.reduce((n,i)=>n+i.qty,0)}
-function addToCart(ev,p){ev.preventDefault();ev.stopPropagation();const c=getCart();const ex=c.find(i=>i.id===p.id);if(ex)ex.qty++;else c.push({id:p.id,title:p.title,price:p.price,qty:1});setCart(c)}
 fetch("/api/catalog").then(r=>r.json()).then(d=>{
-  if(!d.products.length){grid.innerHTML='<div class="empty">No products yet. Publish a listing from the maker chat, then reload.</div>';return}
-  grid.innerHTML=d.products.map(p=>'<a class="product-card" href="'+p.path+'">'+(p.photo_url?'<img src="'+p.photo_url+'" alt="">':'<span class="noimg"></span>')+'<div class="pc-body"><h3>'+esc(p.title)+'</h3><p>'+esc(p.materials||"Handmade item")+'</p>'+(p.price?'<div class="price">₹'+p.price+'</div>':'')+'<div class="pc-link">View &amp; ask a question &rarr;</div><button class="addbtn" data-add="'+p.id+'">Add to cart</button></div></a>').join("");
-  grid.querySelectorAll("[data-add]").forEach(btn=>btn.onclick=ev=>{const p=d.products.find(x=>x.id===btn.getAttribute("data-add"));addToCart(ev,p)});
+  if(!d.products.length){grid.innerHTML='<div class="empty">No products yet. Ask the maker to publish a listing, then reload.</div>';return}
+  grid.innerHTML=d.products.map(p=>'<a class="product-card" href="'+p.path+'">'+(p.photo_url?'<img src="'+p.photo_url+'" alt="">':'<span class="noimg"></span>')+'<div class="pc-body">'+(p.price?'<div class="price">\u20b9'+esc(p.price)+'</div>':'')+(p.colour?'<div class="colour">Colour: '+esc(p.colour)+'</div>':'')+'<div class="pc-link">View &amp; ask a question &rarr;</div></div></a>').join("");
 }).catch(()=>{grid.innerHTML='<div class="empty">Could not load products.</div>'});
-const place=document.getElementById("placeorder");
-if(place)place.onclick=()=>{const c=getCart();if(!c.length)return;const name=prompt("Your name?")||"A buyer";const contact=prompt("Your phone or email?")||"";let done=0;c.forEach(item=>{fetch("/api/buyer/order",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({product_id:item.id,buyer_id:localStorage.getItem("buyer_id"),name:name,contact:contact,quantity:item.qty})}).then(r=>r.json()).then(()=>{done++;if(done===c.length){setCart([]);alert("Order placed! The maker has been notified on WhatsApp.")}})});};
-renderCart();
 """
 
 SHOP_HTML = (
@@ -1268,9 +1312,7 @@ SHOP_HTML = (
     "<title>Artisan Market</title><style>" + SHARED_CSS + SHOP_EXTRA_CSS + "</style></head>"
     "<body class='shop-page'><header class='shop-header'><a href='/shop' class='brand'>Artisan Market</a>"
     "<a href='/' class='seller-link'>I'm a maker</a></header>"
-    "<div class='shop-wrap'><div id='grid' class='grid'></div>"
-    "<div class='cartbar' id='cartbar'><span><strong id='cartcount'>0</strong> item(s) in cart</span>"
-    "<button id='placeorder'>Place order on WhatsApp</button></div></div>"
+    "<div class='shop-wrap'><div id='grid' class='grid'></div></div>"
     "<script>" + SHOP_JS + "</script></body></html>"
 )
 
@@ -1391,6 +1433,7 @@ async def sample(request: Request):
     session.ledger.add_many(SAMPLE_FACTS)
     session.q_index = len(QUESTIONS)
     session.price = _parse_price(next((f["text"] for f in SAMPLE_FACTS if f["type"] == "price"), ""))
+    session.photo = {"bytes": _SAMPLE_PHOTO, "content_type": "image/svg+xml"}
     reply = _listing_reply(session, prefix=f"Sample maker: {len(SAMPLE_FACTS)} confirmed facts loaded.")
     return _respond(request, session, reply)
 
@@ -1442,6 +1485,14 @@ def listing(sid: str):
     }
 
 
+_SAMPLE_PHOTO = (
+    b"<svg xmlns='http://www.w3.org/2000/svg' width='600' height='450'>"
+    b"<rect width='600' height='450' fill='#284b8c'/>"
+    b"<text x='300' y='235' font-family='sans-serif' font-size='34' fill='#fff' "
+    b"text-anchor='middle'>Indigo Shawl</text></svg>"
+)
+
+
 def _media_url(session):
     return f"/media/{quote(session.id)}" if session.photo else None
 
@@ -1457,14 +1508,20 @@ def catalog():
             {
                 "id": session.id,
                 "title": safe.get("title") or "Handmade piece",
-                "materials": safe.get("materials", ""),
-                "care": safe.get("care", ""),
+                "colour": _session_colour(session),
                 "price": session.price,
                 "photo_url": _media_url(session),
                 "path": f"/shop/{quote(session.id)}",
             }
         )
     return {"products": products}
+
+
+def _session_colour(session):
+    for fact in session.ledger.to_facts():
+        if fact.get("type") == "colour":
+            return fact.get("text", "")
+    return ""
 
 
 @app.post("/api/buyer/ask")
@@ -1595,16 +1652,21 @@ async def photo(request: Request, session_id: str = Form(""), image: UploadFile 
     content_type = image.content_type or "image/jpeg"
     session.photo = {"bytes": data, "content_type": content_type}
     message = "Got your photo - I'll show this exact photo on the buyer page."
+    quick = []
     if session.stage == "interview" and _current_question(session)["key"] == "photo":
         session.pending_facts = [
             {"type": "photo", "text": "The attached photo shows the exact piece the buyer will receive."}
         ]
         message += " Is that correct?"
         session.stage = "confirm"
+        quick = ["Yes", "No, let me fix it"]
+    elif session.stage == "photo":
+        reply = _listing_reply(session, prefix="Photo received. Here is your listing.")
+        return _respond(request, session, reply)
     return {
         "session_id": session.id,
         "messages": [message],
-        "quick_replies": ["Yes", "No, let me fix it"] if session.stage == "confirm" else [],
+        "quick_replies": quick,
         "listing": _listing_payload(session) if session.audit else None,
         "stage": session.stage,
         "buyer_url": "",
@@ -1634,6 +1696,10 @@ async def twilio_webhook(request: Request):
         elif content_type.startswith("audio") or content_type in ("video/ogg", "application/ogg"):
             text = transcribe(data, "audio.ogg") or text
 
+    if session.stage == "photo" and session.photo:
+        reply = _listing_reply(session, prefix="Photo received. Here is your listing.")
+        return Response(content=_twiml(reply["messages"]), media_type="application/xml")
+
     if (
         PENDING_BY_SELLER.get(user_id)
         and not is_publish(text)
@@ -1651,7 +1717,12 @@ async def twilio_webhook(request: Request):
 
     messages = list(reply["messages"])
     if reply.get("buyer_path") and reply["listing"] and reply["listing"].get("published"):
-        url = (PUBLIC_BASE_URL or "") + reply["buyer_path"]
+        base = PUBLIC_BASE_URL
+        if not base:
+            host = request.headers.get("host", "")
+            if host:
+                base = f"https://{host}"
+        url = (base or "") + reply["buyer_path"]
         if url:
             messages.append(f"Buyer page: {url}")
     return Response(content=_twiml(messages), media_type="application/xml")

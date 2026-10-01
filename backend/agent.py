@@ -13,6 +13,7 @@ INTRO = (
 
 SAMPLE_FACTS = [
     {"type": "identity", "text": "Handwoven indigo shawl"},
+    {"type": "colour", "text": "Indigo blue and off-white"},
     {"type": "material", "text": "Handspun cotton with natural indigo dye"},
     {"type": "making_time", "text": "About two weeks per piece"},
     {"type": "delivery", "text": "Made to order; ships in about 3-4 weeks"},
@@ -188,6 +189,8 @@ def _handle_english(session: Session, text: str):
         return _ask_confirm(session)
 
     if session.stage == "interview":
+        if openai_client.is_bare_confirm(text):
+            return _reply(_current_question(session)["question"], _current_question(session)["quick_replies"], stage="interview")
         if openai_client.is_non_answer(text):
             session.pending_facts = []
             key = _current_question(session)["key"]

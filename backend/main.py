@@ -44,6 +44,13 @@ def _media_url(session) -> str | None:
     return f"/media/{quote(session.id)}" if session.photo else None
 
 
+def _session_colour(session) -> str:
+    for fact in session.ledger.to_facts():
+        if fact.get("type") == "colour":
+            return fact.get("text", "")
+    return ""
+
+
 @app.get("/")
 def index():
     return FileResponse(str(FRONTEND / "index.html"))
@@ -176,8 +183,7 @@ def catalog():
             {
                 "id": session.id,
                 "title": safe.get("title") or "Handmade piece",
-                "materials": safe.get("materials", ""),
-                "care": safe.get("care", ""),
+                "colour": _session_colour(session),
                 "price": session.price,
                 "photo_url": _media_url(session),
                 "path": f"/shop/{quote(session.id)}",
