@@ -558,6 +558,7 @@ class Session:
         self.pending_facts = []
         self.audit = None
         self.published = False
+        self.photo = None
         self.created = time.time()
 
 
@@ -782,7 +783,7 @@ body{margin:0;font-family:"Segoe UI",system-ui,-apple-system,sans-serif;backgrou
 """
 
 FRONTEND_JS = r"""
-const chat=document.getElementById("chat"),quick=document.getElementById("quick"),input=document.getElementById("input"),sendBtn=document.getElementById("send"),micBtn=document.getElementById("mic"),resetBtn=document.getElementById("reset"),statusEl=document.getElementById("status"),toast=document.getElementById("toast");
+const chat=document.getElementById("chat"),quick=document.getElementById("quick"),input=document.getElementById("input"),sendBtn=document.getElementById("send"),micBtn=document.getElementById("mic"),photoBtn=document.getElementById("photoBtn"),photoFile=document.getElementById("photoFile"),resetBtn=document.getElementById("reset"),statusEl=document.getElementById("status"),toast=document.getElementById("toast");
 let sessionId=localStorage.getItem("stl_session")||null,busy=false;
 const LABELS=[["story","Story"],["materials","Materials"],["care","Care"],["production","Production time"],["variations","Natural variations"],["cultural_note","Cultural note"],["photo_note","The exact piece"],["buyer_faq","Buyer FAQ"]];
 function esc(v){return String(v||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
@@ -800,6 +801,9 @@ resetBtn.onclick=async()=>{await fetch("/api/reset",{method:"POST",headers:{"Con
 let recorder=null,chunks=[];
 micBtn.onclick=async()=>{if(recorder&&recorder.state==="recording"){recorder.stop();return}try{const stream=await navigator.mediaDevices.getUserMedia({audio:true});recorder=new MediaRecorder(stream);chunks=[];recorder.ondataavailable=e=>chunks.push(e.data);recorder.onstop=async()=>{micBtn.classList.remove("recording");stream.getTracks().forEach(t=>t.stop());await sendVoice(new Blob(chunks,{type:"audio/webm"}))};recorder.start();micBtn.classList.add("recording");showToast("Recording... tap again to send")}catch(e){showToast("Microphone not available")}};
 async function sendVoice(blob){busy=true;addBubble("[voice note]",true);const typing=addTyping();const form=new FormData();form.append("session_id",sessionId||"");form.append("audio",blob,"voice.webm");try{const res=await fetch("/api/voice",{method:"POST",body:form});const data=await res.json();typing.remove();if(data.transcript)addBubble("Transcript: "+data.transcript,false);handleResponse(data)}catch(e){typing.remove();addBubble("Could not send voice note.",false)}finally{busy=false}}
+photoBtn.onclick=()=>photoFile.click();
+photoFile.onchange=()=>{const f=photoFile.files[0];if(f)sendPhoto(f);photoFile.value=""};
+async function sendPhoto(file){busy=true;const typing=addTyping();const form=new FormData();form.append("session_id",sessionId||"");form.append("image",file);try{const res=await fetch("/api/photo",{method:"POST",body:form});const data=await res.json();typing.remove();handleResponse(data)}catch(e){typing.remove();addBubble("Could not send photo.",false)}finally{busy=false}}
 window.addEventListener("DOMContentLoaded",()=>send("hi"));
 """
 
@@ -812,9 +816,11 @@ INDEX_HTML = (
     "<div class='subtitle' id='status'>maker assistant · online</div></div>"
     "<button class='ghost' id='reset' title='New listing'>&#8635;</button></header>"
     "<main id='chat' class='chat'></main><div id='quick' class='quick'></div>"
-    "<footer class='composer'><button class='mic' id='mic' title='Record voice note'>&#127908;</button>"
+    "<footer class='composer'><button class='mic' id='photoBtn' title='Send photo'>&#128247;</button>"
+    "<button class='mic' id='mic' title='Record voice note'>&#127908;</button>"
     "<input id='input' type='text' placeholder='Type a message' autocomplete='off'/>"
-    "<button class='send' id='send' title='Send'>&#10148;</button></footer></div>"
+    "<button class='send' id='send' title='Send'>&#10148;</button>"
+    "<input id='photoFile' type='file' accept='image/*' hidden/></footer></div>"
     "<div id='toast' class='toast'></div>"
     "<script>" + FRONTEND_JS + "</script></body></html>"
 )
@@ -835,6 +841,7 @@ BUYER_HTML = (
     "function esc(v){return String(v||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}"
     "fetch('/api/listing/'+SID).then(r=>r.json()).then(d=>{if(d.error){document.getElementById('title').textContent='Listing not ready yet';return}"
     "const s=d.safe||{};document.getElementById('title').textContent=s.title||'Handmade piece';document.getElementById('tagline').textContent='Handmade · one of a kind';"
+    "if(d.photo_url){const img=document.createElement('img');img.src=d.photo_url;img.alt='Product photo';img.style.cssText='width:100%;border-radius:12px;margin-bottom:16px';document.querySelector('.buyer-wrap').insertBefore(img,document.getElementById('title'))}"
     "const sec=document.getElementById('sections');for(const f of Object.keys(LABELS)){if(!s[f])continue;const div=document.createElement('div');div.className='buyer-section';div.innerHTML='<h2>'+LABELS[f]+'</h2><p>'+esc(s[f])+'</p>';sec.appendChild(div)}"
     "if(d.removed&&d.removed.length){const n=document.createElement('div');n.className='removed-note';n.innerHTML='<strong>Guarded for your trust:</strong> '+d.removed.length+' claim(s) the maker did not confirm were blocked from this listing instead of being invented.';document.getElementById('removed').appendChild(n)}"
     "const facts=document.getElementById('facts');(d.facts||[]).forEach(x=>{const div=document.createElement('div');div.className='provenance';div.textContent=(FL[x.type]||x.type)+': '+x.text;facts.appendChild(div)})"
@@ -932,6 +939,50 @@ def listing(sid: str):
         "claims": session.audit["claims"],
         "facts": session.ledger.all(),
         "published": session.published,
+        "photo_url": _media_url(session),
+    }
+
+
+def _media_url(session):
+    return f"/media/{quote(session.id)}" if session.photo else None
+
+
+@app.get("/media/{sid}")
+def media(sid: str):
+    session = store.get(sid)
+    if not session.photo:
+        return Response(status_code=404)
+    return Response(content=session.photo["bytes"], media_type=session.photo["content_type"])
+
+
+async def _download_media(url):
+    auth = (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN) if (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN) else None
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get(url, auth=auth, follow_redirects=True)
+        return response.content
+
+
+@app.post("/api/photo")
+async def photo(request: Request, session_id: str = Form(""), image: UploadFile = File(...)):
+    session = store.get(session_id or None)
+    data = await image.read()
+    content_type = image.content_type or "image/jpeg"
+    session.photo = {"bytes": data, "content_type": content_type}
+    message = "Got your photo - I'll show this exact photo on the buyer page."
+    if session.stage == "interview" and _current_question(session)["key"] == "photo":
+        session.pending_facts = [
+            {"type": "photo", "text": "The attached photo shows the exact piece the buyer will receive."}
+        ]
+        message += " Is that correct?"
+        session.stage = "confirm"
+    return {
+        "session_id": session.id,
+        "messages": [message],
+        "quick_replies": ["Yes", "No, let me fix it"] if session.stage == "confirm" else [],
+        "listing": _listing_payload(session) if session.audit else None,
+        "stage": session.stage,
+        "buyer_url": "",
+        "mock_llm": not LLM_ENABLED,
     }
 
 
@@ -942,32 +993,123 @@ async def twilio_webhook(request: Request):
     user_id = (form.get("From", "") or "").strip().lower()
     session = store.get(user_id)
     text = (form.get("Body", "") or "").strip()
-    media_url = form.get("MediaUrl0") if media_count else None
-    if media_url:
+
+    for index in range(media_count):
+        media_url = form.get(f"MediaUrl{index}")
+        content_type = form.get(f"MediaContentType{index}", "") or ""
+        if not media_url:
+            continue
         try:
-            auth = (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN) if (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN) else None
-            async with httpx.AsyncClient() as client:
-                media = await client.get(media_url, auth=auth, follow_redirects=True)
-                text = transcribe(media.content, "audio.ogg") or text
+            data = await _download_media(media_url)
         except Exception:
-            pass
+            continue
+        if content_type.startswith("image"):
+            session.photo = {"bytes": data, "content_type": content_type}
+        elif content_type.startswith("audio") or content_type in ("video/ogg", "application/ogg"):
+            text = transcribe(data, "audio.ogg") or text
+
     reply = handle_message(session, text)
-    return Response(content=_twiml(reply["messages"]), media_type="application/xml")
+
+    messages = list(reply["messages"])
+    if reply.get("buyer_path") and reply["listing"] and reply["listing"].get("published"):
+        url = (PUBLIC_BASE_URL or "") + reply["buyer_path"]
+        if url:
+            messages.append(f"Buyer page: {url}")
+    return Response(content=_twiml(messages), media_type="application/xml")
+
+
+_tunnel_proc = None
+
+
+def _start_cloudflared(port):
+    from shutil import which
+
+    exe = which("cloudflared")
+    if not exe:
+        return None
+    proc = subprocess.Popen(
+        [exe, "tunnel", "--url", f"http://127.0.0.1:{port}", "--no-autoupdate"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    deadline = time.time() + 40
+    for line in proc.stdout:
+        match = re.search(r"https://[a-z0-9-]+\.trycloudflare\.com", line)
+        if match:
+            return match.group(0), proc
+        if time.time() > deadline:
+            break
+    proc.terminate()
+    return None
+
+
+def _start_pyngrok(port):
+    try:
+        importlib.import_module("pyngrok")
+    except ImportError:
+        print("Installing pyngrok for the public tunnel...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "pyngrok"])
+    from pyngrok import conf, ngrok
+
+    token = os.getenv("NGROK_AUTHTOKEN", "").strip()
+    if token:
+        conf.get_default().auth_token = token
+    tunnel = ngrok.connect(port, "http")
+    public_url = tunnel.public_url
+    if public_url.startswith("http://"):
+        public_url = "https://" + public_url[len("http://"):]
+    return public_url.rstrip("/")
+
+
+def start_tunnel(port):
+    global PUBLIC_BASE_URL, _tunnel_proc
+    result = _start_cloudflared(port)
+    if result:
+        url, proc = result
+        _tunnel_proc = proc
+    else:
+        url = _start_pyngrok(port)
+    PUBLIC_BASE_URL = url
+    return PUBLIC_BASE_URL
 
 
 def main():
     import uvicorn
 
-    host = os.getenv("HOST", "127.0.0.1")
+    live = "--live" in sys.argv or os.getenv("LIVE", "").strip().lower() in {"1", "true", "yes"}
+    host = "0.0.0.0" if live else os.getenv("HOST", "127.0.0.1")
     port = int(os.getenv("PORT", "8000"))
-    url = f"http://{'127.0.0.1' if host in ('0.0.0.0', '') else host}:{port}"
-    print("=" * 60)
-    print(" Source-Truth Listings")
-    print(f" Open:  {url}")
-    print(f" Mode:  {'OpenAI (' + OPENAI_MODEL + ')' if LLM_ENABLED else 'offline mock (set OPENAI_API_KEY for real AI)'}")
-    print("=" * 60)
+    local_url = f"http://127.0.0.1:{port}"
+
+    print("=" * 66)
+    print("  Source-Truth Listings")
+    print(f"  Open:  {local_url}")
+    print(f"  Mode:  {'OpenAI (' + OPENAI_MODEL + ')' if LLM_ENABLED else 'offline mock (set OPENAI_API_KEY for real AI)'}")
+
+    public_url = PUBLIC_BASE_URL
+    if live:
+        try:
+            public_url = start_tunnel(port)
+            print(f"  Public: {public_url}")
+            print("")
+            print("  WhatsApp (Twilio sandbox):")
+            print("   1. Twilio Console > Messaging > Try it out > Send a WhatsApp message")
+            print("   2. Join the sandbox from your phone with the code Twilio shows")
+            print(f"   3. Set the inbound webhook (POST) to: {public_url}/webhook/twilio")
+            print("   4. Message the sandbox - photos and voice notes work")
+        except Exception as exc:
+            print(f"  Tunnel failed: {exc}")
+            print("  Fix it one of these ways, then re-run:")
+            print("    a) Set NGROK_AUTHTOKEN in .env  (free: https://dashboard.ngrok.com/get-started/your-authtoken)")
+            print("    b) Install cloudflared (winget install --id Cloudflare.cloudflared) - no account needed")
+            print(f"    c) Run your own tunnel, then set PUBLIC_BASE_URL=https://... and restart")
+            print("  The app is still running locally; WhatsApp just needs the public URL.")
+    print("=" * 66)
+
     if os.getenv("NO_BROWSER", "").strip().lower() not in {"1", "true", "yes"}:
-        threading.Timer(1.5, lambda: webbrowser.open(url)).start()
+        threading.Timer(1.8, lambda: webbrowser.open(local_url)).start()
     uvicorn.run(app, host=host, port=port)
 
 

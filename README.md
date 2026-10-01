@@ -94,23 +94,54 @@ Exercises the whole flow (interview, guard, publish, buyer page, restart, retry,
 non-answer handling, voice, reset, invalid input, Twilio webhook) and exits non-zero on
 any failure.
 
-## Real WhatsApp (Twilio sandbox)
+## Go live on WhatsApp (Twilio sandbox)
 
-1. In Twilio Console, open **Messaging > Try it out > Send a WhatsApp message** and join
-   the sandbox from your phone.
-2. Expose your server publicly (e.g. `ngrok http 8000`) and set `PUBLIC_BASE_URL` to the
-   public URL in `.env`, plus `TWILIO_ACCOUNT_SID` and `TWILIO_AUTH_TOKEN`.
-3. Set the sandbox **"When a message comes in"** webhook to
-   `https://<your-url>/webhook/twilio` (HTTP POST).
-4. Message the sandbox: the same flow runs over real WhatsApp, including voice notes
-   (transcribed with Whisper).
+You stay the **owner** (you hold the Twilio account + the app). The artisan side runs on
+WhatsApp and the **buyer/customer version is a shareable web link** you send to your friend.
 
-The Twilio path and the simulator share the same `agent.handle_message` core through the
-`backend/transport.py` adapter.
+### 1. Twilio account
+Create a free account at https://www.twilio.com, then open
+**Messaging > Try it out > Send a WhatsApp message**. Copy your **Account SID** and
+**Auth Token** and put them in `.env`:
+
+```
+TWILIO_ACCOUNT_SID=AC...
+TWILIO_AUTH_TOKEN=...
+OPENAI_API_KEY=sk-...        # needed for voice-note transcription
+```
+
+### 2. Public URL + run
+
+```powershell
+python app.py --live
+```
+
+This starts the app and creates a public HTTPS tunnel, then prints the exact webhook URL.
+It tries `cloudflared` first if installed (no account needed:
+`winget install --id Cloudflare.cloudflared`), otherwise ngrok
+(set `NGROK_AUTHTOKEN`, free). If both are blocked, run your own tunnel and set
+`PUBLIC_BASE_URL=https://...` in `.env`.
+
+### 3. Point the sandbox at your app
+In the sandbox settings, set **"When a message comes in"** to
+`https://<your-public-url>/webhook/twilio`, method **POST**.
+
+### 4. Test with your friend
+- **You (maker):** from your phone, send Twilio's join code to the sandbox number, then
+  message it. Send **photos** and **voice notes** - photos are attached to the listing and
+  voice notes are transcribed (with an OpenAI key).
+- When you reply **Publish**, the bot sends back the **buyer page link**. Forward that link
+  to your friend.
+- **Your friend (customer):** opens the link - no WhatsApp needed. They see the photo,
+  materials, care, production time, natural variations, and the provenance panel.
+
+Sessions are keyed by phone number, so several testers can use the same sandbox number
+without colliding. The Twilio path and the simulator share the same `handle_message` core.
 
 ## Project layout
 
 ```
+app.py              single-file standalone app (recommended entrypoint)
 backend/
   main.py           FastAPI app, chat/voice/listing endpoints, Twilio webhook
   agent.py          interview -> draft -> guard -> reply orchestration
