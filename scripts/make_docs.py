@@ -491,8 +491,81 @@ def build():
         ],
     )
 
-    # 12. Limitations
-    h1(doc, "12. Limitations and Future Work")
+    # 12. Budget
+    h1(doc, "12. Approximate Budget")
+    doc.add_paragraph(
+        "All figures are approximate USD based on published 2026 rates. WhatsApp and model prices "
+        "change periodically, so verify before committing. Costs scale roughly linearly with message "
+        "volume and are dominated by per-message WhatsApp fees; the AI cost is negligible at these volumes."
+    )
+    h2(doc, "12.1 Unit rates used")
+    table(
+        doc,
+        ["Item", "Approx. rate", "Notes"],
+        [
+            ("Twilio WhatsApp handling fee", "$0.005 per message", "Charged for inbound and outbound messages."),
+            ("Meta India service message (user-initiated, 24h window)", "First 1,000/month free, then ~$0.003", "The maker's free-form replies fall here."),
+            ("Meta India utility template", "~$0.0014 per message", "Only needed outside the 24-hour window."),
+            ("OpenAI gpt-4o-mini", "$0.15 / 1M input, $0.60 / 1M output", "About $0.002-0.005 per listing (extraction + draft + guard)."),
+            ("OpenAI Whisper transcription", "$0.006 per minute", "A 30-second voice note costs about $0.003."),
+            ("Phone number (production only)", "~$1.15 per month", "Not required for the sandbox/trial sender."),
+            ("Public tunnel", "$0 (cloudflared) / ~$8 per month (ngrok static domain)", "Trycloudflare is free but the URL is ephemeral."),
+            ("Hosting", "$0 local / ~$5-25 per month cloud", "Running on the maker's laptop is $0."),
+            ("Domain (optional)", "~$10-15 per year", "Only for a branded buyer link."),
+        ],
+    )
+    h2(doc, "12.2 Scenario A - Hackathon demo / prototype (this build)")
+    table(
+        doc,
+        ["Line item", "Cost"],
+        [
+            ("Twilio WhatsApp trial", "$0 (free trial credit, typically ~$15)"),
+            ("OpenAI API", "~$0 using the offline mock; under $1 with a key"),
+            ("Public tunnel", "$0 (cloudflared)"),
+            ("Hosting", "$0 (runs on the maker's machine)"),
+            ("Total", "~$0"),
+        ],
+    )
+    h2(doc, "12.3 Scenario B - Pilot with a friend (about 100 listings, ~1,200 messages/month)")
+    table(
+        doc,
+        ["Line item", "Approx. monthly cost"],
+        [
+            ("Twilio handling (1,200 messages x $0.005)", "$6.00"),
+            ("Meta service fees (about 200 beyond the free 1,000)", "$0.60"),
+            ("OpenAI listing generation (100 listings)", "~$0.30"),
+            ("Whisper voice (100 x 30 seconds)", "~$0.30"),
+            ("Tunnel + hosting", "$0"),
+            ("Total", "~$7 (well under $10)"),
+        ],
+    )
+    h2(doc, "12.4 Scenario C - Production (about 1,000 listings, ~12,000 messages/month)")
+    table(
+        doc,
+        ["Line item", "Approx. monthly cost"],
+        [
+            ("Twilio handling (12,000 messages x $0.005)", "$60"),
+            ("Meta service fees (about 11,000 beyond the free 1,000)", "$33"),
+            ("Production phone number", "$1.15"),
+            ("OpenAI listing generation (1,000 listings)", "~$4"),
+            ("Whisper voice", "~$3"),
+            ("Hosting + domain", "~$6-26"),
+            ("Total", "~$110-150"),
+        ],
+    )
+    h2(doc, "12.5 One-time and non-cash costs")
+    bullets(
+        doc,
+        [
+            "Development: $0 in software (open-source stack); the cost is build time (an overnight hackathon).",
+            "Optional domain: ~$10-15 per year.",
+            "Some WhatsApp BSPs charge a one-time sender registration fee (roughly $0-50); Twilio's sandbox/trial is free.",
+            "Rotate the Twilio credentials that were shared in chat before production use.",
+        ],
+    )
+
+    # 13. Limitations
+    h1(doc, "13. Limitations and Future Work")
     table(
         doc,
         ["Limitation", "Future work"],
@@ -507,8 +580,8 @@ def build():
         ],
     )
 
-    # 13. Demo
-    h1(doc, "13. Demo Script")
+    # 14. Demo
+    h1(doc, "14. Demo Script")
     numbered(
         doc,
         [
@@ -522,8 +595,8 @@ def build():
         ],
     )
 
-    # 14. Glossary
-    h1(doc, "14. Glossary")
+    # 15. Glossary
+    h1(doc, "15. Glossary")
     table(
         doc,
         ["Term", "Meaning"],
@@ -538,8 +611,13 @@ def build():
     )
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
-    doc.save(str(OUT))
-    print(f"Wrote {OUT}")
+    try:
+        doc.save(str(OUT))
+        print(f"Wrote {OUT}")
+    except PermissionError:
+        fallback = OUT.with_name(OUT.stem + "_updated" + OUT.suffix)
+        doc.save(str(fallback))
+        print(f"'{OUT.name}' is open in Word. Wrote {fallback} instead - close Word and re-run to update the original.")
 
 
 if __name__ == "__main__":

@@ -586,6 +586,16 @@ store = SessionStore()
 # --------------------------------------------------------------------------
 INTRO = "Hi! I turn your craft knowledge into a buyer-ready listing where nothing is invented. Every claim stays traceable to you."
 
+SAMPLE_FACTS = [
+    {"type": "identity", "text": "Handwoven indigo shawl"},
+    {"type": "material", "text": "Handspun cotton with natural indigo dye"},
+    {"type": "care", "text": "Hand wash cold, dry in shade, never machine wash"},
+    {"type": "process", "text": "Handwoven on a pit loom, about two weeks per piece"},
+    {"type": "variation", "text": "Dye shade and weave texture vary slightly"},
+    {"type": "photo", "text": "The photo shows the exact piece the buyer receives; it is one of a kind"},
+    {"type": "cultural", "text": "A family motif; the meaning is not documented here"},
+]
+
 
 def _reply(messages, quick_replies=None, listing=None, stage=None, buyer_path=None):
     if isinstance(messages, str):
@@ -783,7 +793,7 @@ body{margin:0;font-family:"Segoe UI",system-ui,-apple-system,sans-serif;backgrou
 """
 
 FRONTEND_JS = r"""
-const chat=document.getElementById("chat"),quick=document.getElementById("quick"),input=document.getElementById("input"),sendBtn=document.getElementById("send"),micBtn=document.getElementById("mic"),photoBtn=document.getElementById("photoBtn"),photoFile=document.getElementById("photoFile"),resetBtn=document.getElementById("reset"),statusEl=document.getElementById("status"),toast=document.getElementById("toast");
+const chat=document.getElementById("chat"),quick=document.getElementById("quick"),input=document.getElementById("input"),sendBtn=document.getElementById("send"),micBtn=document.getElementById("mic"),photoBtn=document.getElementById("photoBtn"),photoFile=document.getElementById("photoFile"),resetBtn=document.getElementById("reset"),sampleBtn=document.getElementById("sample"),statusEl=document.getElementById("status"),toast=document.getElementById("toast");
 let sessionId=localStorage.getItem("stl_session")||null,busy=false;
 const LABELS=[["story","Story"],["materials","Materials"],["care","Care"],["production","Production time"],["variations","Natural variations"],["cultural_note","Cultural note"],["photo_note","The exact piece"],["buyer_faq","Buyer FAQ"]];
 function esc(v){return String(v||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
@@ -798,6 +808,7 @@ async function send(text){if(busy||!text)return;busy=true;setQuick([]);addBubble
 sendBtn.onclick=()=>{const v=input.value.trim();input.value="";send(v)};
 input.addEventListener("keydown",e=>{if(e.key==="Enter"){const v=input.value.trim();input.value="";send(v)}});
 resetBtn.onclick=async()=>{await fetch("/api/reset",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({session_id:sessionId})});localStorage.removeItem("stl_session");sessionId=null;chat.innerHTML="";setQuick([]);send("hi")};
+sampleBtn.onclick=async()=>{if(busy)return;busy=true;setQuick([]);chat.innerHTML="";addBubble("Show a sample maker",true);const typing=addTyping();try{const res=await fetch("/api/sample",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({session_id:sessionId})});const data=await res.json();typing.remove();handleResponse(data)}catch(e){typing.remove();addBubble("Could not load sample.",false)}finally{busy=false}};
 let recorder=null,chunks=[];
 micBtn.onclick=async()=>{if(recorder&&recorder.state==="recording"){recorder.stop();return}try{const stream=await navigator.mediaDevices.getUserMedia({audio:true});recorder=new MediaRecorder(stream);chunks=[];recorder.ondataavailable=e=>chunks.push(e.data);recorder.onstop=async()=>{micBtn.classList.remove("recording");stream.getTracks().forEach(t=>t.stop());await sendVoice(new Blob(chunks,{type:"audio/webm"}))};recorder.start();micBtn.classList.add("recording");showToast("Recording... tap again to send")}catch(e){showToast("Microphone not available")}};
 async function sendVoice(blob){busy=true;addBubble("[voice note]",true);const typing=addTyping();const form=new FormData();form.append("session_id",sessionId||"");form.append("audio",blob,"voice.webm");try{const res=await fetch("/api/voice",{method:"POST",body:form});const data=await res.json();typing.remove();if(data.transcript)addBubble("Transcript: "+data.transcript,false);handleResponse(data)}catch(e){typing.remove();addBubble("Could not send voice note.",false)}finally{busy=false}}
@@ -814,6 +825,7 @@ INDEX_HTML = (
     "<div class='phone'><header class='wa-header'><div class='avatar'>ST</div>"
     "<div class='header-text'><div class='title'>Source-Truth Listings</div>"
     "<div class='subtitle' id='status'>maker assistant · online</div></div>"
+    "<button class='ghost' id='sample' title='Load sample demo'>&#9654;</button>"
     "<button class='ghost' id='reset' title='New listing'>&#8635;</button></header>"
     "<main id='chat' class='chat'></main><div id='quick' class='quick'></div>"
     "<footer class='composer'><button class='mic' id='photoBtn' title='Send photo'>&#128247;</button>"
@@ -895,6 +907,20 @@ async def chat(request: Request):
         return JSONResponse({"error": "invalid payload"}, status_code=400)
     session = store.get(payload.get("session_id"))
     return _respond(request, session, handle_message(session, payload.get("message", "")))
+
+
+@app.post("/api/sample")
+async def sample(request: Request):
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    session = store.get(payload.get("session_id"))
+    session.ledger = Ledger()
+    session.ledger.add_many(SAMPLE_FACTS)
+    session.q_index = len(QUESTIONS)
+    reply = _listing_reply(session, prefix="Sample maker: seven confirmed facts loaded.")
+    return _respond(request, session, reply)
 
 
 @app.post("/api/reset")
