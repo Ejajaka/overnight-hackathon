@@ -100,6 +100,12 @@ def build():
         "description' and 'an AI wrote a description that is safe to publish for a traditional craft community'."
     )
 
+    doc.add_paragraph(
+        "Beyond the listing, buyers interact: they browse a storefront and ask questions. Questions the "
+        "knowledge base can answer are answered instantly; the rest are escalated to the maker on WhatsApp "
+        "as text or voice, then processed, stored as new confirmed facts, and returned to the buyer."
+    )
+
     # 2. Background
     h1(doc, "2. Background and Problem Statement")
     h2(doc, "2.1 The scenario")
@@ -177,33 +183,36 @@ def build():
     h2(doc, "4.1 High-level architecture")
     code(
         doc,
-        "                         MAKER (WhatsApp)                         BUYER (browser)\n"
-        "                                |                                      |\n"
-        "                     voice note / photo / text                 shareable buyer link\n"
-        "                                |                                      |\n"
-        "                                v                                      v\n"
-        "                 +----------------------------+          +---------------------------+\n"
-        "                 |  Twilio WhatsApp (trial)   |          |  Buyer page /buyer/{id}   |\n"
-        "                 +----------------------------+          +---------------------------+\n"
-        "                                |  POST /webhook/twilio                 ^\n"
-        "                                v                                       |  GET /api/listing/{id}\n"
-        "      +---------------------------------------------------------------------------+\n"
-        "      |                       FastAPI application (app.py)                       |\n"
-        "      |                                                                           |\n"
-        "      |   Transport        Agent orchestrator        Session store (in-memory)    |\n"
-        "      |   (Twilio/TwiML) -> interview -> ledger ->  draft -> GUARD -> reply      |\n"
-        "      |            |                         |            |            |         |\n"
-        "      |            |                         v            v            v         |\n"
-        "      |            |                    Claim Ledger   Draft module  Guard       |\n"
-        "      |            |                    (confirmed     (LLM writer)  (claim       |\n"
-        "      |            |                     facts)                      audit +     |\n"
-        "      |            |                                                 repair)     |\n"
-        "      |            v                                                              |\n"
-        "      |   OpenAI API (chat + Whisper)      Media store (photo bytes -> /media/{id})|\n"
-        "      +---------------------------------------------------------------------------+\n"
-        "                                ^\n"
-        "                                |  HTTPS tunnel (cloudflared / ngrok)\n"
-        "                                |  https://<random>.trycloudflare.com/webhook/twilio",
+        "   MAKER (WhatsApp)                          BUYER (storefront /shop)\n"
+        "        |                                              |\n"
+        "  voice / photo / text                       browse products, type a question\n"
+        "        |                                              |\n"
+        "        v                                              v\n"
+        "  +---------------------+                    +------------------------+\n"
+        "  | Twilio WhatsApp     |                    | /shop , /shop/{id}     |\n"
+        "  | (trial sender)      |                    | buyer Q&A page         |\n"
+        "  +---------------------+                    +------------------------+\n"
+        "        |  POST /webhook/twilio                        |  POST /api/buyer/ask\n"
+        "        v                                              v\n"
+        "  +===========================================================================+\n"
+        "  |                     FastAPI application (app.py)                          |\n"
+        "  |                                                                           |\n"
+        "  |  MAKER LOOP                                  BUYER LOOP                    |\n"
+        "  |  transport -> interview -> ledger            ask -> kb_answer(facts +      |\n"
+        "  |        -> draft -> GUARD -> publish          prior Q&A)                    |\n"
+        "  |                                                    | hit        | miss     |\n"
+        "  |                                                    v            v          |\n"
+        "  |                                             instant answer  escalate to   |\n"
+        "  |                                                             seller via     |\n"
+        "  |                                                             send_whatsapp  |\n"
+        "  |                                                                           |\n"
+        "  |  Claim Ledger / KB  <-- seller answer (voice/text) <-- PENDING queue      |\n"
+        "  |  Guard | Draft module | Session store | Media store (/media/{id})         |\n"
+        "  |  OpenAI API (chat for extract/draft/guard/KB + Whisper for voice)         |\n"
+        "  +===========================================================================+\n"
+        "        ^\n"
+        "        |  HTTPS tunnel (cloudflared / ngrok)\n"
+        "        |  https://<random>.trycloudflare.com/webhook/twilio",
     )
     h2(doc, "4.2 Component responsibilities")
     table(
@@ -218,6 +227,11 @@ def build():
             ("Guard (core)", "Splits the draft into atomic claims, classifies each against the ledger, and repairs or blocks unsafe claims."),
             ("Session store", "In-memory per-conversation state; Twilio sessions are keyed by phone number."),
             ("Buyer page", "Read-only listing with a provenance panel showing the confirmed facts used."),
+            ("Storefront (/shop)", "Lists every published product; buyers browse and open a product."),
+            ("Buyer Q&A", "Buyer types a question; it is answered from the knowledge base or escalated to the seller."),
+            ("Knowledge-base answering", "Answers strictly from confirmed facts and previously answered Q&A; never invents."),
+            ("Escalation queue", "Holds unanswered questions and notifies the seller on WhatsApp via the Messages API."),
+            ("Seller answer intake", "Seller reply (text or voice) -> transcribe -> extract a fact -> add to the ledger -> return to buyer."),
             ("Simulator UI", "A browser WhatsApp clone so the whole flow can be tested without a phone."),
         ],
     )
@@ -242,6 +256,30 @@ def build():
             "Local: http://127.0.0.1:8000 (simulator + buyer pages).",
             "Public: an HTTPS tunnel URL (cloudflared trycloudflare or ngrok) used as the Twilio webhook target.",
             "Configuration through environment variables / .env (secrets never committed).",
+        ],
+    )
+
+    h2(doc, "4.5 Buyer question loop (knowledge base + seller escalation)")
+    numbered(
+        doc,
+        [
+            "Buyer opens the storefront at /shop and a product page at /shop/{id}.",
+            "Buyer types a question; the page calls POST /api/buyer/ask.",
+            "kb_answer checks the product's knowledge base (confirmed facts plus previously answered questions).",
+            "If the answer is present, it is returned instantly and shown in the chat.",
+            "If not, the question is stored as pending, escalated to the seller over WhatsApp, and the buyer is told the maker is checking.",
+            "The seller replies with text or a voice note. Voice notes are transcribed with Whisper.",
+            "The reply is turned into a structured fact, added to the product's knowledge base, and the question is marked answered.",
+            "The buyer page polls /api/buyer/thread and shows the answer; future similar questions are answered instantly from the learned fact.",
+        ],
+    )
+    h2(doc, "4.6 Why this loop matters")
+    bullets(
+        doc,
+        [
+            "The knowledge base grows from real buyer questions, so the maker answers each question once.",
+            "Uncertain or customisation questions still reach the human, preserving trust and cultural accuracy.",
+            "Because answers become confirmed facts, the same source-truth guard applies to anything published.",
         ],
     )
 
@@ -454,7 +492,14 @@ def build():
         ["Method & path", "Purpose"],
         [
             ("GET /", "Maker simulator UI (WhatsApp-style)."),
-            ("GET /buyer/{id}", "Shareable buyer page."),
+            ("GET /shop", "Buyer storefront listing all published products."),
+            ("GET /shop/{id}", "Product page with the buyer Q&A chat."),
+            ("GET /api/catalog", "Published products for the storefront."),
+            ("POST /api/buyer/ask", "Buyer question; answered from the knowledge base or escalated."),
+            ("GET /api/buyer/thread/{id}", "Buyer's questions and answers; polled for escalated answers."),
+            ("GET /api/seller/questions", "Pending buyer questions for a seller session."),
+            ("POST /api/seller/answer", "Seller answers a pending question (used by the simulator)."),
+            ("GET /buyer/{id}", "Shareable read-only buyer page with provenance."),
             ("GET /api/health", "Liveness and whether OpenAI/Twilio are configured."),
             ("POST /api/chat", "Simulator chat turn {session_id, message}."),
             ("POST /api/voice", "Upload a voice note; transcribes and continues the flow."),
@@ -485,6 +530,7 @@ def build():
         doc,
         [
             "Offline smoke test (scripts/smoke_test.py and the single-file equivalent) covers interview, guard blocking, publish, buyer page, restart, retry, non-answer handling, voice, reset, invalid input, and the Twilio webhook - 28 checks, all passing.",
+            "Buyer-loop test: publish -> catalog -> storefront -> buyer asks an answerable question (instant) and an unanswerable one (escalated) -> seller answers -> buyer sees it -> the learned fact answers a similar question instantly.",
             "Command-line demo (scripts/demo.py) prints a full interview and the blocked claims.",
             "Verified live: public health ok, public webhook returns valid TwiML.",
             "Guard validation: on a maker who confirmed 'hand wash only', the guard blocked the invented 'It is also machine washable', the invented 'Ships within two days', and the invented 'symbolises prosperity and good fortune', while keeping the confirmed facts.",

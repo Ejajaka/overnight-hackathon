@@ -31,13 +31,27 @@ listing in minutes, where every claim is traceable to the maker and nothing is i
 5. **Publish** - the maker shares a buyer page that answers the four buyer questions using
    only confirmed facts.
 
+Then the **buyer loop**:
+
+6. **Browse** - buyers open the storefront `/shop`, see published products, and open one.
+7. **Ask** - the buyer types a question. It is looked up in the product's knowledge base
+   (confirmed facts + previously answered questions).
+8. **Answer or escalate** - if the knowledge base has it, the buyer gets an instant answer.
+   If not, the question is escalated to the maker on WhatsApp.
+9. **Learn** - the maker replies with text or a voice note; it is processed into a fact,
+   stored in the knowledge base, and shown back to the buyer.
+
 ```
-Maker (WhatsApp)  ->  FastAPI /webhook or simulator  ->  agent.py
-                                                          |  interview.py -> ledger.py
-                                                          |  draft.py (LLM)
-                                                          |  guard.py  (audit + repair)
-                                                          v
-                                              buyer page  /buyer/{id}
+Maker (WhatsApp) -> FastAPI /webhook or simulator -> agent.py
+                                                      | interview -> ledger (KB)
+                                                      | draft (LLM)
+                                                      | guard (audit + repair)
+                                                      v
+                                          product  /shop/{id}
+
+Buyer /shop -> ask -> kb_answer --> hit  -> instant answer
+                                 \-> miss -> escalate on WhatsApp -> maker reply
+                                            -> extract fact -> add to KB -> answer buyer
 ```
 
 ## Quick start (one file)
@@ -152,7 +166,8 @@ colliding. The Twilio path and the simulator share the same `handle_message` cor
 ## Project layout
 
 ```
-app.py              single-file standalone app (recommended entrypoint)
+app.py              single-file standalone app (recommended): maker flow + buyer
+                    storefront/Q&A loop + escalation, all in one file
 docs/
   Architecture_and_Proposed_Solution.docx   full architecture + rationale document
 scripts/make_docs.py  regenerates the Word document

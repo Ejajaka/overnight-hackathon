@@ -79,6 +79,7 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 OPENAI_TRANSCRIBE_MODEL = os.getenv("OPENAI_TRANSCRIBE_MODEL", "whisper-1")
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "").strip()
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "").strip()
+TWILIO_WHATSAPP_FROM = os.getenv("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
 USE_MOCK_LLM = _bool(os.getenv("USE_MOCK_LLM"), False)
 LLM_ENABLED = bool(OPENAI_API_KEY) and not USE_MOCK_LLM
@@ -123,6 +124,13 @@ Rules:
 - Be conservative. When unsure, choose unsupported.
 - For unsupported/cultural_unverified claims, put a safe replacement in replacement, or "" to drop it.
 Split into the smallest meaningful claims. Use the exact field names from the draft."""
+
+KB_SYSTEM = """You are a shop assistant answering a buyer's question about a handmade product.
+Use ONLY the confirmed facts provided (and prior answered questions). Never guess or invent.
+Return JSON only: {"answerable": true/false, "answer": "..."}.
+If the facts do not contain the answer, set answerable to false and answer to "".
+If answerable, write a short, warm, direct answer in one or two sentences using only the facts.
+If the question asks about cultural meaning and the facts do not document it, it is NOT answerable."""
 
 LISTING_FIELDS = [
     "title",
@@ -409,6 +417,88 @@ def _mock_audit(draft, facts):
 
 
 # --------------------------------------------------------------------------
+# Buyer knowledge-base answering
+# --------------------------------------------------------------------------
+_KB_CARE = {"wash", "washing", "washable", "dry", "clean", "cleanable", "launder"}
+_KB_PHOTO = {"photo", "photograph", "picture", "exact", "same", "receive", "receive"}
+_KB_TIME = {"long", "time", "delivery", "deliver", "ship", "shipping", "weeks", "days", "takes", "wait", "ready"}
+_KB_VARY = {"vary", "varies", "variation", "differ", "difference", "unique", "identical", "same", "consistent"}
+_KB_CULTURE = {"meaning", "mean", "symbol", "symbolise", "symbolize", "culture", "cultural", "tradition", "heritage", "significance"}
+_KB_MATERIAL = {"material", "fabric", "made", "cotton", "silk", "wool", "dye", "colour", "color", "thread"}
+
+
+_KB_REQUEST_PHRASES = (
+    "can you",
+    "could you",
+    "would you",
+    "do you",
+    "make it",
+    "make this",
+    "custom",
+    "customi",
+    "available in",
+    "come in",
+    "other colour",
+    "other color",
+    "different colour",
+    "different color",
+    "another colour",
+    "another color",
+)
+
+
+def mock_kb_answer(question, facts, qa_history):
+    ql = (question or "").lower()
+    qt = _tokens(question)
+    for item in reversed(qa_history):
+        if item.get("status") == "answered" and item.get("answer"):
+            base = _tokens(item.get("question", ""))
+            if base and len(base & qt) / max(len(base), 1) >= 0.5:
+                return item["answer"]
+    if any(phrase in ql for phrase in _KB_REQUEST_PHRASES):
+        return None
+    by = {}
+    for fact in facts:
+        by.setdefault(fact["type"], []).append(fact["text"])
+
+    def first(ftype):
+        values = by.get(ftype)
+        return values[0] if values else None
+
+    checks = [
+        (_KB_CARE, "care"),
+        (_KB_PHOTO, "photo"),
+        (_KB_TIME, "process"),
+        (_KB_VARY, "variation"),
+        (_KB_CULTURE, "cultural"),
+        (_KB_MATERIAL, "material"),
+    ]
+    for words, ftype in checks:
+        if qt & words and first(ftype):
+            return first(ftype)
+    return None
+
+
+def kb_answer(question, facts, qa_history):
+    client = _client()
+    if client is None:
+        return mock_kb_answer(question, facts, qa_history)
+    try:
+        prior = "\n".join(f"Q: {i['question']}\nA: {i['answer']}" for i in qa_history if i.get("answer")) or "(none)"
+        payload = _chat_json(
+            KB_SYSTEM,
+            f"Confirmed facts:\n{_facts_block(facts)}\n\nPreviously answered:\n{prior}\n\n"
+            f"Buyer question: {question}\n\nAnswer.",
+        )
+        answer = str(payload.get("answer", "")).strip()
+        if payload.get("answerable") and answer:
+            return answer
+        return None
+    except Exception:
+        return mock_kb_answer(question, facts, qa_history)
+
+
+# --------------------------------------------------------------------------
 # Ledger
 # --------------------------------------------------------------------------
 class Ledger:
@@ -570,6 +660,9 @@ class Session:
         self.audit = None
         self.published = False
         self.photo = None
+        self.seller_phone = None
+        self.price = None
+        self.qa = []
         self.created = time.time()
 
 
@@ -588,8 +681,71 @@ class SessionStore:
     def remove(self, sid):
         self._sessions.pop(sid, None)
 
+    def all(self):
+        return list(self._sessions.values())
+
 
 store = SessionStore()
+
+BUYER_QUESTIONS = {}
+PENDING_BY_SELLER = {}
+
+
+def publish_product(session):
+    session.published = True
+    if not session.seller_phone:
+        session.seller_phone = session.id
+    return session.seller_phone
+
+
+def ask_buyer_question(session, question, buyer_id):
+    answer = kb_answer(question, session.ledger.to_facts(), session.qa)
+    entry = {
+        "id": uuid.uuid4().hex[:10],
+        "question": question.strip(),
+        "answer": answer or "",
+        "status": "answered" if answer else "pending",
+        "buyer_id": buyer_id or "guest",
+        "created": time.time(),
+    }
+    session.qa.append(entry)
+    if not answer:
+        BUYER_QUESTIONS[entry["id"]] = {"product_id": session.id, "entry": entry}
+        PENDING_BY_SELLER.setdefault(session.seller_phone or session.id, []).append(entry["id"])
+        seller = session.seller_phone or session.id
+        if str(seller).startswith("whatsapp:"):
+            title = (session.audit or {}).get("safe", {}).get("title", "your product")
+            send_whatsapp(
+                seller,
+                f"A buyer asked about '{title}':\n\"{entry['question']}\"\n\nReply with the answer (text or voice note).",
+            )
+    return entry
+
+
+def answer_seller_question(seller_key, text):
+    pending = PENDING_BY_SELLER.get(seller_key) or []
+    if not pending:
+        return None
+    qid = pending[0]
+    record = BUYER_QUESTIONS.get(qid)
+    if not record:
+        pending.pop(0)
+        return None
+    session = store.get(record["product_id"])
+    entry = record["entry"]
+    answer = (text or "").strip()
+    if not answer:
+        return None
+    facts = extract_facts("buyer_question", entry["question"], answer)
+    if not facts:
+        facts = [{"type": "general", "text": answer}]
+    session.ledger.add_many(facts)
+    entry["answer"] = answer
+    entry["status"] = "answered"
+    entry["answered"] = time.time()
+    pending.pop(0)
+    BUYER_QUESTIONS.pop(qid, None)
+    return entry
 
 
 # --------------------------------------------------------------------------
@@ -737,7 +893,7 @@ def handle_message(session, text):
 
     if session.stage == "review":
         if is_publish(text):
-            session.published = True
+            publish_product(session)
             return _reply(
                 ["Published. Share this buyer page - it answers care, the exact piece, why it takes longer, and natural variations, all from your confirmed facts."],
                 ["Start a new listing"],
@@ -758,6 +914,22 @@ def handle_message(session, text):
 def _twiml(messages):
     body = "".join(f"<Message>{escape(m)}</Message>" for m in messages if m)
     return f"<?xml version='1.0' encoding='UTF-8'?><Response>{body}</Response>"
+
+
+def send_whatsapp(to, body):
+    if not (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_WHATSAPP_FROM):
+        return False
+    try:
+        url = f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_ACCOUNT_SID}/Messages.json"
+        response = httpx.post(
+            url,
+            auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN),
+            data={"From": TWILIO_WHATSAPP_FROM, "To": to, "Body": body},
+            timeout=20,
+        )
+        return response.status_code < 300
+    except Exception:
+        return False
 
 
 # --------------------------------------------------------------------------
@@ -805,7 +977,7 @@ body{margin:0;font-family:"Segoe UI",system-ui,-apple-system,sans-serif;backgrou
 
 FRONTEND_JS = r"""
 const chat=document.getElementById("chat"),quick=document.getElementById("quick"),input=document.getElementById("input"),sendBtn=document.getElementById("send"),micBtn=document.getElementById("mic"),photoBtn=document.getElementById("photoBtn"),photoFile=document.getElementById("photoFile"),resetBtn=document.getElementById("reset"),sampleBtn=document.getElementById("sample"),statusEl=document.getElementById("status"),toast=document.getElementById("toast");
-let sessionId=localStorage.getItem("stl_session")||null,busy=false;
+let sessionId=localStorage.getItem("stl_session")||null,busy=false,pendingQ=[],seenQ={};
 const LABELS=[["story","Story"],["materials","Materials"],["care","Care"],["production","Production time"],["variations","Natural variations"],["cultural_note","Cultural note"],["photo_note","The exact piece"],["buyer_faq","Buyer FAQ"]];
 function esc(v){return String(v||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
 function now(){return new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}
@@ -815,7 +987,9 @@ function addListingCard(listing){const card=document.createElement("div");card.c
 function setQuick(r){quick.innerHTML="";(r||[]).forEach(t=>{const c=document.createElement("button");c.className="chip";c.textContent=t;c.onclick=()=>send(t);quick.appendChild(c)})}
 function showToast(m){toast.textContent=m;toast.classList.add("show");setTimeout(()=>toast.classList.remove("show"),2200)}
 function handleResponse(resp){if(resp.session_id){sessionId=resp.session_id;localStorage.setItem("stl_session",sessionId)}if(resp.buyer_url&&resp.listing&&resp.listing.published)resp.listing.buyer_path=resp.buyer_url;(resp.messages||[]).forEach(t=>addBubble(t,false));if(resp.listing)addListingCard(resp.listing);setQuick(resp.quick_replies);if(resp.mock_llm)statusEl.textContent="maker assistant · offline mock"}
-async function send(text){if(busy||!text)return;busy=true;setQuick([]);addBubble(text,true);const typing=addTyping();try{const res=await fetch("/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({session_id:sessionId,message:text})});const data=await res.json();typing.remove();handleResponse(data)}catch(e){typing.remove();addBubble("Connection error. Is the server running?",false)}finally{busy=false}}
+async function sendSellerAnswer(text){busy=true;addBubble(text,true);const typing=addTyping();try{const res=await fetch("/api/seller/answer",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({session_id:sessionId,answer:text})});const d=await res.json();typing.remove();if(d.ok){pendingQ.shift();addBubble("Sent to the buyer and saved to the knowledge base.",false)}else addBubble("No pending question to answer.",false)}catch(e){typing.remove();addBubble("Could not send that answer.",false)}finally{busy=false}}
+async function pollSeller(){try{const res=await fetch("/api/seller/questions?session_id="+(sessionId||""));const d=await res.json();const fresh=(d.questions||[]).filter(q=>!seenQ[q.question_id]);fresh.forEach(q=>{seenQ[q.question_id]=1;pendingQ.push(q);addBubble("Buyer question: "+q.question+"\n\n(Reply here - your answer goes to the buyer and into the knowledge base.)",false)});if(fresh.length)setQuick(["Publish","Fix something"])}catch(e){}}
+async function send(text){if(busy||!text)return;const low=text.toLowerCase();if(pendingQ.length&&low!=="publish"&&!low.includes("new listing")){return sendSellerAnswer(text)}busy=true;setQuick([]);addBubble(text,true);const typing=addTyping();try{const res=await fetch("/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({session_id:sessionId,message:text})});const data=await res.json();typing.remove();handleResponse(data)}catch(e){typing.remove();addBubble("Connection error. Is the server running?",false)}finally{busy=false}}
 sendBtn.onclick=()=>{const v=input.value.trim();input.value="";send(v)};
 input.addEventListener("keydown",e=>{if(e.key==="Enter"){const v=input.value.trim();input.value="";send(v)}});
 resetBtn.onclick=async()=>{await fetch("/api/reset",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({session_id:sessionId})});localStorage.removeItem("stl_session");sessionId=null;chat.innerHTML="";setQuick([]);send("hi")};
@@ -826,7 +1000,7 @@ async function sendVoice(blob){busy=true;addBubble("[voice note]",true);const ty
 photoBtn.onclick=()=>photoFile.click();
 photoFile.onchange=()=>{const f=photoFile.files[0];if(f)sendPhoto(f);photoFile.value=""};
 async function sendPhoto(file){busy=true;const typing=addTyping();const form=new FormData();form.append("session_id",sessionId||"");form.append("image",file);try{const res=await fetch("/api/photo",{method:"POST",body:form});const data=await res.json();typing.remove();handleResponse(data)}catch(e){typing.remove();addBubble("Could not send photo.",false)}finally{busy=false}}
-window.addEventListener("DOMContentLoaded",()=>send("hi"));
+window.addEventListener("DOMContentLoaded",()=>{send("hi");setInterval(pollSeller,5000)});
 """
 
 INDEX_HTML = (
@@ -872,6 +1046,94 @@ BUYER_HTML = (
     "</script></body></html>"
 )
 
+SHOP_EXTRA_CSS = """
+.shop-page{background:#f7f4ef;display:block}
+.shop-header{background:#075e54;color:#fff;display:flex;justify-content:space-between;align-items:center;padding:14px 20px}
+.shop-header .brand{color:#fff;text-decoration:none;font-weight:700;font-size:18px}
+.shop-header .seller-link{color:#cdebe4;text-decoration:none;font-size:13px}
+.shop-wrap{max-width:1000px;margin:0 auto;padding:24px 16px 60px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:16px}
+.product-card{background:#fff;border-radius:14px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.08);text-decoration:none;color:inherit;display:flex;flex-direction:column}
+.product-card img,.product-card .noimg{width:100%;height:200px;object-fit:cover;background:#e8e8e8;display:block}
+.product-card .pc-body{padding:12px 14px}
+.product-card h3{margin:0 0 4px;font-size:16px}
+.product-card p{margin:0;color:#667781;font-size:13px}
+.product-card .pc-link{margin-top:10px;color:#128c7e;font-weight:600;font-size:13px}
+.empty{color:#667781;text-align:center;padding:60px 0;font-size:15px}
+.qa-wrap{max-width:640px;margin:28px auto 0}
+.qa-wrap h2{font-size:15px;color:#075e54;margin:0 0 10px}
+.qa-item{background:#fff;border-radius:12px;padding:12px 14px;margin-bottom:10px;box-shadow:0 1px 2px rgba(0,0,0,.06)}
+.qa-item .q{font-weight:600}
+.qa-item .a{margin-top:6px}
+.qa-item .pending{color:#a15c00;font-size:13px;margin-top:6px}
+.chat-input{display:flex;gap:8px;position:sticky;bottom:0;background:#f7f4ef;padding:12px 0}
+.chat-input input{flex:1;border:1px solid #ddd;border-radius:22px;padding:12px 16px;font-size:14px;outline:none}
+.chat-input button{background:#128c7e;color:#fff;border:none;border-radius:22px;padding:0 22px;font-size:14px;cursor:pointer}
+"""
+
+SHOP_JS = r"""
+function esc(v){return String(v||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
+const grid=document.getElementById("grid");
+fetch("/api/catalog").then(r=>r.json()).then(d=>{
+  if(!d.products.length){grid.innerHTML='<div class="empty">No products yet. Publish a listing from the maker chat, then reload.</div>';return}
+  grid.innerHTML=d.products.map(p=>'<a class="product-card" href="'+p.path+'">'+(p.photo_url?'<img src="'+p.photo_url+'" alt="">':'<span class="noimg"></span>')+'<div class="pc-body"><h3>'+esc(p.title)+'</h3><p>'+esc(p.materials||"Handmade item")+'</p><div class="pc-link">View &amp; ask a question &rarr;</div></div></a>').join("");
+}).catch(()=>{grid.innerHTML='<div class="empty">Could not load products.</div>'});
+"""
+
+SHOP_HTML = (
+    "<!doctype html><html lang='en'><head><meta charset='utf-8'/>"
+    "<meta name='viewport' content='width=device-width, initial-scale=1'/>"
+    "<title>Artisan Market</title><style>" + SHARED_CSS + SHOP_EXTRA_CSS + "</style></head>"
+    "<body class='shop-page'><header class='shop-header'><a href='/shop' class='brand'>Artisan Market</a>"
+    "<a href='/' class='seller-link'>I'm a maker</a></header>"
+    "<div class='shop-wrap'><div id='grid' class='grid'></div></div>"
+    "<script>" + SHOP_JS + "</script></body></html>"
+)
+
+PRODUCT_JS = r"""
+const PID=window.location.pathname.split("/").filter(Boolean).pop();
+const QLABELS=[["story","Story"],["materials","Materials"],["care","Care"],["production","Production time"],["variations","Natural variations"],["cultural_note","Cultural note"],["photo_note","The exact piece"],["buyer_faq","Buyer questions"]];
+let buyerId=localStorage.getItem("buyer_id");if(!buyerId){buyerId="b"+Math.random().toString(36).slice(2,10);localStorage.setItem("buyer_id",buyerId)}
+function esc(v){return String(v||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
+function renderListing(d){
+  if(d.error){document.getElementById("detail").innerHTML="<h1>Listing not ready</h1>";return}
+  const s=d.safe||{};let html="<div class='trust-banner'>Every statement below is traced to facts the maker confirmed. Nothing is invented.</div>";
+  if(d.photo_url)html+="<img src='"+d.photo_url+"' alt='' style='width:100%;border-radius:12px;margin-bottom:14px'/>";
+  html+="<h1>"+esc(s.title||"Handmade piece")+"</h1><div class='tagline'>Handmade &middot; one of a kind</div>";
+  for(const f of QLABELS){if(s[f[0]])html+="<div class='buyer-section'><h2>"+f[1]+"</h2><p>"+esc(s[f[0]])+"</p></div>"}
+  document.getElementById("detail").innerHTML=html;
+}
+function loadQa(){fetch("/api/buyer/thread/"+PID).then(r=>r.json()).then(d=>{
+  const box=document.getElementById("qa");
+  box.innerHTML=(d.qa||[]).map(qaHtml).join("")||"<p style='color:#667781'>No questions yet. Ask the maker anything.</p>";
+})}
+function qaHtml(item){return "<div class='qa-item'><div class='q'>Q: "+esc(item.question)+"</div>"+(item.answer?"<div class='a'>A: "+esc(item.answer)+"</div>":"<div class='pending'>Seller is checking &hellip; the answer will appear here.</div>")+"</div>"}
+function ask(){const inp=document.getElementById("q");const q=inp.value.trim();if(!q)return;inp.value="";
+  fetch("/api/buyer/ask",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({product_id:PID,buyer_id:buyerId,question:q})})
+   .then(r=>r.json()).then(res=>{loadQa();if(res.status==="pending")startPoll()})}
+let pollTimer=null;
+function startPoll(){if(pollTimer)return;pollTimer=setInterval(()=>{fetch("/api/buyer/thread/"+PID).then(r=>r.json()).then(d=>{loadQa();if(!(d.qa||[]).some(x=>x.status==="pending")){clearInterval(pollTimer);pollTimer=null}})},3000)}
+window.addEventListener("DOMContentLoaded",()=>{
+  fetch("/api/listing/"+PID).then(r=>r.json()).then(renderListing).catch(()=>{});
+  loadQa();
+  document.getElementById("ask").onclick=ask;
+  document.getElementById("q").addEventListener("keydown",e=>{if(e.key==="Enter")ask()});
+});
+"""
+
+PRODUCT_HTML = (
+    "<!doctype html><html lang='en'><head><meta charset='utf-8'/>"
+    "<meta name='viewport' content='width=device-width, initial-scale=1'/>"
+    "<title>Product &middot; Artisan Market</title><style>" + SHARED_CSS + SHOP_EXTRA_CSS + "</style></head>"
+    "<body class='shop-page'><header class='shop-header'><a href='/shop' class='brand'>Artisan Market</a>"
+    "<a href='/' class='seller-link'>I'm a maker</a></header>"
+    "<div class='shop-wrap'><div id='detail' class='buyer-wrap' style='padding:0'></div>"
+    "<div class='qa-wrap'><h2>Ask the maker</h2><div id='qa'></div>"
+    "<div class='chat-input'><input id='q' placeholder='e.g. Is it machine washable?'/>"
+    "<button id='ask'>Ask</button></div></div></div>"
+    "<script>" + PRODUCT_JS + "</script></body></html>"
+)
+
 
 def _absolute(request, path):
     if not path:
@@ -901,6 +1163,16 @@ def index():
 @app.get("/buyer/{sid}")
 def buyer(sid: str):
     return HTMLResponse(BUYER_HTML)
+
+
+@app.get("/shop")
+def shop():
+    return HTMLResponse(SHOP_HTML)
+
+
+@app.get("/shop/{sid}")
+def shop_product(sid: str):
+    return HTMLResponse(PRODUCT_HTML)
 
 
 @app.get("/api/health")
@@ -984,6 +1256,82 @@ def _media_url(session):
     return f"/media/{quote(session.id)}" if session.photo else None
 
 
+@app.get("/api/catalog")
+def catalog():
+    products = []
+    for session in store.all():
+        if not session.published or not session.audit:
+            continue
+        safe = session.audit["safe"]
+        products.append(
+            {
+                "id": session.id,
+                "title": safe.get("title") or "Handmade piece",
+                "materials": safe.get("materials", ""),
+                "care": safe.get("care", ""),
+                "price": session.price,
+                "photo_url": _media_url(session),
+                "path": f"/shop/{quote(session.id)}",
+            }
+        )
+    return {"products": products}
+
+
+@app.post("/api/buyer/ask")
+async def buyer_ask(request: Request):
+    payload = await request.json()
+    session = store.get(payload.get("product_id"))
+    if not session.audit:
+        return JSONResponse({"error": "unknown product"}, status_code=404)
+    question = (payload.get("question") or "").strip()
+    if not question:
+        return JSONResponse({"error": "empty question"}, status_code=400)
+    entry = ask_buyer_question(session, question, payload.get("buyer_id"))
+    return {
+        "status": entry["status"],
+        "answer": entry["answer"],
+        "question_id": entry["id"],
+        "seller_notified": entry["status"] == "pending",
+    }
+
+
+@app.get("/api/buyer/thread/{product_id}")
+def buyer_thread(product_id: str):
+    session = store.get(product_id)
+    return {"qa": session.qa}
+
+
+def _seller_key(session):
+    return session.seller_phone or session.id
+
+
+@app.get("/api/seller/questions")
+def seller_questions(session_id: str = ""):
+    session = store.get(session_id or None)
+    items = []
+    for qid in PENDING_BY_SELLER.get(_seller_key(session), []):
+        record = BUYER_QUESTIONS.get(qid)
+        if record:
+            items.append(
+                {
+                    "question_id": qid,
+                    "question": record["entry"]["question"],
+                    "product_id": record["product_id"],
+                }
+            )
+    return {"session_id": session.id, "questions": items}
+
+
+@app.post("/api/seller/answer")
+async def seller_answer(request: Request):
+    payload = await request.json()
+    session = store.get(payload.get("session_id"))
+    entry = answer_seller_question(_seller_key(session), payload.get("answer", ""))
+    if not entry:
+        return JSONResponse({"error": "no pending question"}, status_code=404)
+    return {"ok": True, "question": entry["question"], "answer": entry["answer"], "product_id": session.id}
+
+
 @app.get("/media/{sid}")
 def media(sid: str):
     session = store.get(sid)
@@ -1044,6 +1392,19 @@ async def twilio_webhook(request: Request):
             session.photo = {"bytes": data, "content_type": content_type}
         elif content_type.startswith("audio") or content_type in ("video/ogg", "application/ogg"):
             text = transcribe(data, "audio.ogg") or text
+
+    if (
+        PENDING_BY_SELLER.get(user_id)
+        and not is_publish(text)
+        and not is_new_listing(text)
+        and (session.stage == "idle" or media_count > 0)
+    ):
+        entry = answer_seller_question(user_id, text)
+        if entry:
+            return Response(
+                content=_twiml(["Thanks - that has been sent to the buyer and added to the knowledge base."]),
+                media_type="application/xml",
+            )
 
     reply = handle_message(session, text)
 
