@@ -141,6 +141,10 @@ def transcribe(data: bytes, filename: str = "audio.webm") -> str:
         text = _gemini_transcribe(data, mime)
         if text:
             return text
+    if settings.groq_api_key:
+        text = _groq_transcribe(data, filename)
+        if text:
+            return text
     client = _client()
     if client is None:
         return ""
@@ -150,6 +154,25 @@ def transcribe(data: bytes, filename: str = "audio.webm") -> str:
             file=(filename, data),
         )
         return (result.text or "").strip()
+    except Exception:
+        return ""
+
+
+def _groq_transcribe(data: bytes, filename: str = "audio.webm") -> str:
+    import httpx
+
+    if not settings.groq_api_key:
+        return ""
+    try:
+        response = httpx.post(
+            f"{settings.groq_base_url}/audio/transcriptions",
+            headers={"Authorization": f"Bearer {settings.groq_api_key}"},
+            files={"file": (filename, data)},
+            data={"model": settings.groq_transcribe_model},
+            timeout=60,
+        )
+        response.raise_for_status()
+        return (response.json().get("text") or "").strip()
     except Exception:
         return ""
 
@@ -167,9 +190,8 @@ def extract_facts(question_type: str, question: str, answer: str) -> list[dict]:
         cleaned = []
         for fact in facts:
             text = str(fact.get("text", "")).strip()
-            ftype = str(fact.get("type", question_type)).strip() or question_type
             if text:
-                cleaned.append({"type": ftype, "text": text})
+                cleaned.append({"type": question_type, "text": text})
         return cleaned or _mock_extract(question_type, answer)
     except Exception:
         return _mock_extract(question_type, answer)

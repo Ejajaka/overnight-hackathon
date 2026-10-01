@@ -77,6 +77,9 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "").strip()
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 OPENAI_TRANSCRIBE_MODEL = os.getenv("OPENAI_TRANSCRIBE_MODEL", "whisper-1")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
+GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1").rstrip("/")
+GROQ_TRANSCRIBE_MODEL = os.getenv("GROQ_TRANSCRIBE_MODEL", "whisper-large-v3")
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "").strip()
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "").strip()
 TWILIO_WHATSAPP_FROM = os.getenv("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886").strip()
@@ -304,12 +307,33 @@ def transcribe(data, filename="audio.webm"):
         text = _gemini_transcribe(data, mime)
         if text:
             return text
+    if GROQ_API_KEY:
+        text = _groq_transcribe(data, filename)
+        if text:
+            return text
     client = _client()
     if client is None:
         return ""
     try:
         result = client.audio.transcriptions.create(model=OPENAI_TRANSCRIBE_MODEL, file=(filename, data))
         return (result.text or "").strip()
+    except Exception:
+        return ""
+
+
+def _groq_transcribe(data, filename="audio.webm"):
+    if not GROQ_API_KEY:
+        return ""
+    try:
+        response = httpx.post(
+            f"{GROQ_BASE_URL}/audio/transcriptions",
+            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+            files={"file": (filename, data)},
+            data={"model": GROQ_TRANSCRIBE_MODEL},
+            timeout=60,
+        )
+        response.raise_for_status()
+        return (response.json().get("text") or "").strip()
     except Exception:
         return ""
 
@@ -327,9 +351,8 @@ def extract_facts(question_type, question, answer):
         cleaned = []
         for fact in payload.get("facts") or []:
             text = str(fact.get("text", "")).strip()
-            ftype = str(fact.get("type", question_type)).strip() or question_type
             if text:
-                cleaned.append({"type": ftype, "text": text})
+                cleaned.append({"type": question_type, "text": text})
         return cleaned or _mock_extract(question_type, answer)
     except Exception:
         return _mock_extract(question_type, answer)
