@@ -34,6 +34,8 @@ _PHOTO_WORDS = {"photo", "photograph", "picture", "exact", "one of a kind", "one
 def _client():
     if not settings.llm_enabled or OpenAI is None:
         return None
+    if settings.openai_base_url:
+        return OpenAI(api_key=settings.openai_api_key, base_url=settings.openai_base_url)
     return OpenAI(api_key=settings.openai_api_key)
 
 
@@ -55,15 +57,23 @@ def chat_json(system: str, user: str) -> dict:
     client = _client()
     if client is None:
         raise RuntimeError("llm disabled")
-    response = client.chat.completions.create(
-        model=settings.openai_model,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-        temperature=0.2,
-        response_format={"type": "json_object"},
-    )
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+    try:
+        response = client.chat.completions.create(
+            model=settings.openai_model,
+            messages=messages,
+            temperature=0.2,
+            response_format={"type": "json_object"},
+        )
+    except Exception:
+        response = client.chat.completions.create(
+            model=settings.openai_model,
+            messages=messages,
+            temperature=0.2,
+        )
     return _extract_json(response.choices[0].message.content or "{}")
 
 

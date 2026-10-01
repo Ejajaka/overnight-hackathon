@@ -15,6 +15,7 @@ def _bool(value, default=False):
 @dataclass
 class Settings:
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "").strip()
+    openai_base_url: str = os.getenv("OPENAI_BASE_URL", "").strip()
     openai_model: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
     openai_transcribe_model: str = os.getenv("OPENAI_TRANSCRIBE_MODEL", "whisper-1")
     twilio_account_sid: str = os.getenv("TWILIO_ACCOUNT_SID", "").strip()

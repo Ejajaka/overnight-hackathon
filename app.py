@@ -74,6 +74,7 @@ def _bool(value, default=False):
 
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "").strip()
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 OPENAI_TRANSCRIBE_MODEL = os.getenv("OPENAI_TRANSCRIBE_MODEL", "whisper-1")
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "").strip()
@@ -151,6 +152,8 @@ NON_ANSWER_PHRASES = ("don't know", "do not know", "dont know", "not sure", "no 
 def _client():
     if not LLM_ENABLED or OpenAI is None:
         return None
+    if OPENAI_BASE_URL:
+        return OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
     return OpenAI(api_key=OPENAI_API_KEY)
 
 
@@ -172,12 +175,20 @@ def _chat_json(system, user):
     client = _client()
     if client is None:
         raise RuntimeError("llm disabled")
-    response = client.chat.completions.create(
-        model=OPENAI_MODEL,
-        messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-        temperature=0.2,
-        response_format={"type": "json_object"},
-    )
+    messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+    try:
+        response = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=messages,
+            temperature=0.2,
+            response_format={"type": "json_object"},
+        )
+    except Exception:
+        response = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=messages,
+            temperature=0.2,
+        )
     return _extract_json(response.choices[0].message.content or "{}")
 
 
