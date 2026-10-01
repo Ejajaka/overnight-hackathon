@@ -40,7 +40,24 @@ Maker (WhatsApp)  ->  FastAPI /webhook or simulator  ->  agent.py
                                               buyer page  /buyer/{id}
 ```
 
-## Quick start
+## Quick start (one file)
+
+```powershell
+python app.py
+```
+
+That is it. `app.py` is fully self-contained: it installs any missing dependencies,
+starts the server, and opens the browser automatically.
+
+Open http://127.0.0.1:8000 - the simulated WhatsApp UI opens and starts the interview.
+
+Useful environment variables: `PORT` (default 8000), `NO_BROWSER=1` to skip opening the
+browser, `HOST` (default 127.0.0.1).
+
+## Quick start (modular version)
+
+The same app is also split into `backend/` + `frontend/` if you prefer to work on it
+modularly:
 
 ```powershell
 python -m venv .venv
@@ -48,11 +65,6 @@ python -m venv .venv
 pip install -r requirements.txt
 python -m uvicorn backend.main:app --reload --port 8000
 ```
-
-(Installing into a fresh virtual environment avoids conflicts with unrelated global
-packages such as streamlit.)
-
-Open http://127.0.0.1:8000 - the simulated WhatsApp UI opens and starts the interview.
 
 Runs fully offline with a deterministic mock if no API key is set. To use real LLMs:
 
