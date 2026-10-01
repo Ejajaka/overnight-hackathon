@@ -153,6 +153,9 @@ colliding. The Twilio path and the simulator share the same `handle_message` cor
 
 ```
 app.py              single-file standalone app (recommended entrypoint)
+docs/
+  Architecture_and_Proposed_Solution.docx   full architecture + rationale document
+scripts/make_docs.py  regenerates the Word document
 backend/
   main.py           FastAPI app, chat/voice/listing endpoints, Twilio webhook
   agent.py          interview -> draft -> guard -> reply orchestration
