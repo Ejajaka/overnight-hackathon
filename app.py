@@ -1135,6 +1135,12 @@ def _twiml(messages):
     return f"<?xml version='1.0' encoding='UTF-8'?><Response>{body}</Response>"
 
 
+def _twiml_single(messages):
+    text = "\n\n".join(m for m in messages if m)
+    body = f"<Message>{escape(text)}</Message>" if text else ""
+    return f"<?xml version='1.0' encoding='UTF-8'?><Response>{body}</Response>"
+
+
 def send_whatsapp(to, body):
     if not (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_WHATSAPP_FROM):
         return False
@@ -1725,7 +1731,7 @@ async def twilio_webhook(request: Request):
         url = (base or "") + reply["buyer_path"]
         if url:
             messages.append(f"Buyer page: {url}")
-    return Response(content=_twiml(messages), media_type="application/xml")
+    return Response(content=_twiml_single(messages), media_type="application/xml")
 
 
 _tunnel_proc = None
