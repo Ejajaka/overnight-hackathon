@@ -4,3 +4,7 @@ __pycache__/
 .venv/
 venv/
 .DS_Store
+
+# Office lock/temp files and generated docx fallbacks
+~$*
+docs/*_updated.docx
