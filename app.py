@@ -139,10 +139,15 @@ TRANSLATE_FROM_EN_SYSTEM = """Translate the given English text into the requeste
 Return JSON only: {"text": "<translation>"}. Keep any *asterisks*, numbers, and URLs intact."""
 
 KB_SYSTEM = """You are a shop assistant answering a buyer's question about a handmade product.
-Use ONLY the confirmed facts provided (and prior answered questions). Never guess or invent.
+You are given the product's confirmed facts and previously answered questions. That is your knowledge base.
+Answer from that knowledge base whenever it covers the question, even if the buyer words it differently
+(paraphrases, synonyms, or indirect phrasings all count). Reuse the meaning of the facts and prior answers.
+Be generous about matching: if a confirmed fact answers the intent of the question, answer it.
+Only set answerable to false when the knowledge base genuinely has nothing relevant at all
+(e.g. a customisation request like a different colour, or a fact that was never captured).
 Return JSON only: {"answerable": true/false, "answer": "..."}.
-If the facts do not contain the answer, set answerable to false and answer to "".
-If answerable, write a short, warm, direct answer in one or two sentences using only the facts.
+Never guess, invent, or add details that are not in the knowledge base.
+If answerable, write a short, warm, direct answer in one or two sentences using only the knowledge base.
 If the question asks about cultural meaning and the facts do not document it, it is NOT answerable."""
 
 LISTING_FIELDS = [
@@ -523,7 +528,9 @@ def _mock_audit(draft, facts):
 # --------------------------------------------------------------------------
 # Buyer knowledge-base answering
 # --------------------------------------------------------------------------
-_KB_CARE = {"wash", "washing", "washable", "dry", "clean", "cleanable", "launder"}
+_KB_PRICE = {"price", "cost", "much", "howmuch", "rupees", "rs", "inr", "rate", "charge", "pay", "pricing", "expensive", "cheap", "dollar", "money", "worth", "priced"}
+_KB_COLOUR = {"colour", "color", "shade", "hue", "tone"}
+_KB_CARE = {"wash", "washing", "washable", "dry", "clean", "cleanable", "launder", "care"}
 _KB_PHOTO = {"photo", "photograph", "picture", "exact", "same", "receive", "receive"}
 _KB_TIME = {"long", "time", "delivery", "deliver", "ship", "shipping", "weeks", "days", "takes", "wait", "ready"}
 _KB_VARY = {"vary", "varies", "variation", "differ", "difference", "unique", "identical", "same", "consistent"}
@@ -554,13 +561,30 @@ _KB_REQUEST_PHRASES = (
 
 
 def mock_kb_answer(question, facts, qa_history):
+    hit = _keyword_kb_answer(question, facts, qa_history)
+    if hit:
+        return hit
+    # fuzzy: answer only on strong overlap (>=0.7) to avoid mis-matches
+    qt = _tokens(question)
+    best = None
+    best_score = 0.0
+    for fact in facts:
+        ftokens = _tokens(fact["text"])
+        if not ftokens:
+            continue
+        score = len(ftokens & qt) / max(len(ftokens), 1)
+        if score > best_score:
+            best_score = score
+            best = fact["text"]
+    if best and best_score >= 0.7:
+        return best
+    return None
+
+
+def _keyword_kb_answer(question, facts, qa_history):
+    """Deterministic high-confidence match (used first so common questions never misfire)."""
     ql = (question or "").lower()
     qt = _tokens(question)
-    for item in reversed(qa_history):
-        if item.get("status") == "answered" and item.get("answer"):
-            base = _tokens(item.get("question", ""))
-            if base and len(base & qt) / max(len(base), 1) >= 0.5:
-                return item["answer"]
     if any(phrase in ql for phrase in _KB_REQUEST_PHRASES):
         return None
     by = {}
@@ -572,7 +596,9 @@ def mock_kb_answer(question, facts, qa_history):
         return values[0] if values else None
 
     checks = [
+        (_KB_PRICE, "price"),
         (_KB_CARE, "care"),
+        (_KB_COLOUR, "colour"),
         (_KB_DELIVERY, "delivery"),
         (_KB_MAKING, "making_time"),
         (_KB_PHOTO, "photo"),
@@ -584,10 +610,22 @@ def mock_kb_answer(question, facts, qa_history):
     for words, ftype in checks:
         if qt & words and first(ftype):
             return first(ftype)
+    # finally reuse a previously answered, genuinely similar question
+    for item in reversed(qa_history):
+        if item.get("status") == "answered" and item.get("answer"):
+            base = _tokens(item.get("question", ""))
+            if base and len(base & qt) / max(len(base), 1) >= 0.7:
+                return item["answer"]
     return None
 
 
 def kb_answer(question, facts, qa_history):
+    # 1. deterministic keyword match first (reliable for the common buyer questions)
+    kw = _keyword_kb_answer(question, facts, qa_history)
+    if kw:
+        return kw
+    if any(phrase in (question or "").lower() for phrase in _KB_REQUEST_PHRASES):
+        return None
     client = _client()
     if client is None:
         return mock_kb_answer(question, facts, qa_history)
@@ -869,8 +907,8 @@ def ask_buyer_question(session, question, buyer_id):
     session.qa.append(entry)
     if not answer:
         BUYER_QUESTIONS[entry["id"]] = {"product_id": session.id, "entry": entry}
-        PENDING_BY_SELLER.setdefault(session.seller_phone or session.id, []).append(entry["id"])
-        seller = session.seller_phone or session.id
+        seller = _seller_key(session)
+        PENDING_BY_SELLER.setdefault(seller, []).append(entry["id"])
         if str(seller).startswith("whatsapp:"):
             title = (session.audit or {}).get("safe", {}).get("title", "your product")
             send_whatsapp(
@@ -881,7 +919,7 @@ def ask_buyer_question(session, question, buyer_id):
 
 
 def answer_seller_question(seller_key, text):
-    pending = PENDING_BY_SELLER.get(seller_key) or []
+    pending = PENDING_BY_SELLER.get(_normalize_phone(seller_key)) or []
     if not pending:
         return None
     qid = pending[0]
@@ -1562,15 +1600,54 @@ def buyer_thread(product_id: str):
     return {"qa": session.qa}
 
 
+def _normalize_phone(value):
+    import re as _re
+
+    raw = (value or "").strip().lower()
+    digits = _re.sub(r"[^0-9]", "", raw)
+    if digits:
+        return digits
+    return raw
+
+
 def _seller_key(session):
-    return session.seller_phone or session.id
+    return _normalize_phone(session.seller_phone or session.id)
+
+
+def _seller_numbers(session):
+    """All identifiers that can refer to this seller (browser session + phone)."""
+    ids = {_normalize_phone(session.id), _normalize_phone(session.seller_phone)}
+    return {x for x in ids if x}
+
+
+def _has_phone(keys):
+    return any(k and k.isdigit() and len(k) >= 8 for k in keys)
+
+
+def _pending_ids_for(session):
+    """Pending buyer-question ids for this seller, matched by any known identifier."""
+    keys = _seller_numbers(session)
+    # also include the seller phone of any product this session published
+    for s in store.all():
+        if s.id == session.id or (s.seller_phone and _normalize_phone(s.seller_phone) in keys):
+            keys |= _seller_numbers(s)
+    ids = []
+    matched = False
+    for key, qids in PENDING_BY_SELLER.items():
+        if key in keys:
+            ids.extend(qids)
+            matched = True
+    if not _has_phone(keys):
+        # generic browser seller with no linked phone: show everything (single-seller demo)
+        ids = [qid for qids in PENDING_BY_SELLER.values() for qid in qids]
+    return ids
 
 
 @app.get("/api/seller/questions")
 def seller_questions(session_id: str = ""):
     session = store.get(session_id or None)
     items = []
-    for qid in PENDING_BY_SELLER.get(_seller_key(session), []):
+    for qid in _pending_ids_for(session):
         record = BUYER_QUESTIONS.get(qid)
         if record:
             items.append(
@@ -1620,8 +1697,9 @@ async def buyer_order(request: Request):
         "status": "placed",
         "created": time.time(),
     }
-    ORDERS[order["id"]] = order
     seller = session.seller_phone or session.id
+    order["seller"] = _normalize_phone(seller)
+    ORDERS[order["id"]] = order
     notified = False
     if str(seller).startswith("whatsapp:"):
         lines = [f"New order for '{title}'", f"Quantity: {quantity}"]
@@ -1639,8 +1717,21 @@ async def buyer_order(request: Request):
 @app.get("/api/orders")
 def orders(session_id: str = ""):
     session = store.get(session_id or None)
-    key = _seller_key(session)
-    mine = [o for o in ORDERS.values() if o["product_id"] == session.id or o.get("seller") == key]
+    keys = _seller_numbers(session)
+    # include identifiers of any product/session that shares this seller's phone
+    for s in store.all():
+        numbers = _seller_numbers(s)
+        if numbers & keys:
+            keys |= numbers
+    mine = [
+        o
+        for o in ORDERS.values()
+        if _normalize_phone(o.get("seller")) in keys
+        or _normalize_phone(o["product_id"]) in keys
+    ]
+    if not _has_phone(keys):
+        # generic browser seller: show all orders (single-seller demo)
+        mine = list(ORDERS.values())
     return {"orders": mine}
 
 
@@ -1715,15 +1806,15 @@ async def twilio_webhook(request: Request):
         return Response(content=_twiml(reply["messages"]), media_type="application/xml")
 
     if (
-        PENDING_BY_SELLER.get(user_id)
+        PENDING_BY_SELLER.get(_normalize_phone(user_id))
         and not is_publish(text)
         and not is_new_listing(text)
-        and (session.stage == "idle" or media_count > 0)
+        and session.stage not in ("interview", "confirm", "photo")
     ):
         entry = answer_seller_question(user_id, text)
         if entry:
             return Response(
-                content=_twiml(["Thanks - that has been sent to the buyer and added to the knowledge base."]),
+                content=_twiml_single(["Thanks - that has been sent to the buyer and added to the knowledge base."]),
                 media_type="application/xml",
             )
 
