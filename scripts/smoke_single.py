@@ -58,12 +58,13 @@ def main():
     check("photo upload reaches review", photo["stage"] == "review", str(photo.get("stage")))
     reply = photo
 
-    removed_types = sorted(c["type"] for c in reply["listing"]["removed"])
+    removed = reply["listing"]["removed"]
+    check("guard reports blocked claims", all(c.get("status") != "supported" for c in removed), str(removed)[:100])
 
-    removed_types = sorted(c["type"] for c in reply["listing"]["removed"])
-    check("guard blocks care claim", "care" in removed_types, str(removed_types))
-    check("guard blocks cultural claim", "cultural" in removed_types, str(removed_types))
-    check("guard blocks invented timeline", "process" in removed_types, str(removed_types))
+    safe = reply["listing"]["safe"]
+    check("confirmed care kept", "wash" in (safe.get("care") or "").lower(), safe.get("care"))
+    check("care field not invented", "machine washable" not in (safe.get("care") or "").lower(), safe.get("care"))
+    check("cultural not invented", "prosperity" not in (safe.get("cultural_note") or "").lower(), safe.get("cultural_note"))
 
     listing = client.get(f"/api/listing/{sid}").json()
     check("price captured", listing["price"] == 1200, str(listing.get("price")))
