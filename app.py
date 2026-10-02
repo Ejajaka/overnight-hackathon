@@ -583,9 +583,15 @@ def mock_kb_answer(question, facts, qa_history):
 
 def _keyword_kb_answer(question, facts, qa_history):
     """Deterministic high-confidence match (used first so common questions never misfire)."""
-    ql = (question or "").lower()
     qt = _tokens(question)
-    if any(phrase in ql for phrase in _KB_REQUEST_PHRASES):
+    # 1. a previously answered, genuinely similar question wins (learned knowledge)
+    for item in reversed(qa_history):
+        if item.get("status") == "answered" and item.get("answer"):
+            base = _tokens(item.get("question", ""))
+            if base and len(base & qt) / max(len(base), 1) >= 0.6:
+                return item["answer"]
+    # 2. customisation-style requests with no learned answer must reach the seller
+    if any(phrase in (question or "").lower() for phrase in _KB_REQUEST_PHRASES):
         return None
     by = {}
     for fact in facts:
@@ -610,20 +616,15 @@ def _keyword_kb_answer(question, facts, qa_history):
     for words, ftype in checks:
         if qt & words and first(ftype):
             return first(ftype)
-    # finally reuse a previously answered, genuinely similar question
-    for item in reversed(qa_history):
-        if item.get("status") == "answered" and item.get("answer"):
-            base = _tokens(item.get("question", ""))
-            if base and len(base & qt) / max(len(base), 1) >= 0.7:
-                return item["answer"]
     return None
 
 
 def kb_answer(question, facts, qa_history):
-    # 1. deterministic keyword match first (reliable for the common buyer questions)
+    # 1. deterministic match (learned answers + common buyer questions)
     kw = _keyword_kb_answer(question, facts, qa_history)
     if kw:
         return kw
+    # 2. customisation-style requests reach the seller rather than being guessed by the LLM
     if any(phrase in (question or "").lower() for phrase in _KB_REQUEST_PHRASES):
         return None
     client = _client()
